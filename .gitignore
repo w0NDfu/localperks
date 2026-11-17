@@ -1,0 +1,35 @@
+# Secrets and runtime state
+.env
+.env.*
+!.env.example
+!frontend/.env.development
+!frontend/.env.production
+src/main/resources/application-local.yaml
+*.pem
+*.key
+*.p12
+*.pfx
+# Dependencies and build output
+target/
+node_modules/
+dist/
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.idea/
+.vscode/
+*.iml
+# Local data and validation output
+artifacts/
+agent-service/data/
+agent-service/evaluations/results/
+frontend/test-results/
+frontend/playwright-report/
+*.log
+*.sqlite3
+*.db
+
+frontend/public/imgs/*
+!frontend/public/imgs/.gitkeep

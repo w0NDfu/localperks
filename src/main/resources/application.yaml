@@ -1,0 +1,82 @@
+server:
+  port: 8081
+spring:
+  application:
+    name: hmdp
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: ${HMDP_DB_URL:jdbc:mysql://127.0.0.1:3307/dianping?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true}
+    username: ${HMDP_DB_USERNAME:localperks}
+    password: ${HMDP_DB_PASSWORD:}
+  redis:
+    host: 127.0.0.1
+    port: 6379
+    lettuce:
+      pool:
+        max-active: 10
+        max-idle: 10
+        min-idle: 1
+        time-between-eviction-runs: 10s
+  jackson:
+    default-property-inclusion: non_null
+  task:
+    scheduling:
+      # Receipt reconciliation must not stall the independent Outbox dispatchers.
+      pool:
+        size: 2
+mybatis-plus:
+  type-aliases-package: com.hmdp.entity
+logging:
+  level:
+    com.hmdp: debug
+  pattern:
+    dateformat: mm:ss.SSS
+rocketmq:
+  name-server: 127.0.0.1:9876
+  producer:
+    group: hmdp-seckill-producer
+    # Ambiguous sends are recovered with the same business ID; do not multiply SDK retries.
+    retry-times-when-send-failed: 0
+hmdp:
+  ops:
+    enabled: ${HMDP_OPS_ENABLED:false}
+  mq:
+    # Compatibility drain for pre-upgrade admission rows; new requests send directly to RocketMQ.
+    retry-fixed-delay: 5000
+    timeout-dispatch-delay: 100
+  seckill:
+    # Includes accepted reservations waiting for SQL order commit across instances.
+    max-pending: 2000
+    max-inflight-sends: 64
+    eligibility-batch:
+      enabled: ${HMDP_ELIGIBILITY_BATCH_ENABLED:true}
+      workers: 2
+      size: 32
+      flush-millis: 1
+      capacity: 1024
+      wait-millis: 2000
+    broker-batch:
+      enabled: ${HMDP_BROKER_BATCH_ENABLED:true}
+      workers: 2
+      size: 32
+      flush-millis: 1
+      capacity: 1024
+      wait-millis: 3000
+  rate-limit:
+    # Keep false for direct local access. Enable only when requests always pass through a trusted proxy.
+    trust-forwarded-headers: false
+  cache:
+    shop:
+      local:
+        # L1 is intentionally shorter than Redis (L2) so a missed invalidation is bounded.
+        ttl-seconds: 60
+        max-size: 10000
+      bloom:
+        name: cache:bloom:shop:v1
+        expected-insertions: 100000
+        false-probability: 0.01
+    voucher:
+      local:
+        # Static voucher metadata only; live seckill stock remains in Redis.
+        ttl-seconds: 60
+        max-size: 10000

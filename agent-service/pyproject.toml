@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "localperks-agent-service"
+version = "0.3.0"
+description = "LocalPerks native multi-agent service with OpenAI-compatible tool calling"
+requires-python = ">=3.12"
+dependencies = [
+    "cryptography>=44,<50",
+    "fastapi>=0.115,<1",
+    "httpx>=0.28,<1",
+    "uvicorn>=0.34,<1",
+    "websockets>=14,<17",
+    "openai>=1.68,<3",
+    "redis>=5,<8",
+    "python-dotenv>=1,<2",
+    "tzdata>=2025.1",
+    "pydantic>=2.10,<3",
+    "psycopg[binary]>=3.2,<4",
+    "psycopg-pool>=3.2,<4",
+    "pgvector>=0.4,<1",
+]
+[project.optional-dependencies]
+test = ["pytest>=8,<10"]
+evaluation = ["numpy>=2,<3"]
+
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+include = ["core*", "tools*", "models*", "memory*", "orchestration*", "agents*", "decision*", "api*", "rag*", "observability*", "evaluations*", "ops*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.package-data]
+evaluations = ["*.jsonl", "*.zip"]
+

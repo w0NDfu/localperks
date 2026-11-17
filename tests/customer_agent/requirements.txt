@@ -1,0 +1,2 @@
+# Isolated benchmark only; runtime dependencies are managed by adjacent agent-service.
+numpy==2.5.4

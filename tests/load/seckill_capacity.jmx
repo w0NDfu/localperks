@@ -1,0 +1,202 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3">
+  <hashTree>
+    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="Seckill capacity: confirmed versus rejected" enabled="true">
+      <boolProp name="TestPlan.serialize_threadgroups">true</boolProp>
+    </TestPlan>
+    <hashTree>
+      <SetupThreadGroup guiclass="SetupThreadGroupGui" testclass="SetupThreadGroup" testname="Warm injector and order path" enabled="true">
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Warmup">
+          <stringProp name="LoopController.loops">32</stringProp>
+          <boolProp name="LoopController.continue_forever">false</boolProp>
+        </elementProp>
+        <stringProp name="ThreadGroup.num_threads">1</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">1</stringProp>
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+      </SetupThreadGroup>
+      <hashTree>
+        <CSVDataSet guiclass="TestBeanGUI" testclass="CSVDataSet" testname="Warmup identities" enabled="true">
+          <stringProp name="filename">${__P(warmFixtures)}</stringProp>
+          <stringProp name="fileEncoding">UTF-8</stringProp>
+          <stringProp name="variableNames">uid,token</stringProp>
+          <stringProp name="delimiter">,</stringProp>
+          <stringProp name="shareMode">shareMode.all</stringProp>
+          <boolProp name="ignoreFirstLine">false</boolProp>
+          <boolProp name="quotedData">false</boolProp>
+          <boolProp name="recycle">false</boolProp>
+          <boolProp name="stopThread">true</boolProp>
+        </CSVDataSet>
+        <hashTree />
+        <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="Identity and JSON headers" enabled="true">
+          <collectionProp name="HeaderManager.headers">
+            <elementProp name="" elementType="Header">
+              <stringProp name="Header.name">Authorization</stringProp>
+              <stringProp name="Header.value">${token}</stringProp>
+            </elementProp>
+            <elementProp name="" elementType="Header">
+              <stringProp name="Header.name">X-Forwarded-For</stringProp>
+              <stringProp name="Header.value">127.0.0.1</stringProp>
+            </elementProp>
+            <elementProp name="" elementType="Header">
+              <stringProp name="Header.name">Content-Type</stringProp>
+              <stringProp name="Header.value">application/json</stringProp>
+            </elementProp>
+          </collectionProp>
+        </HeaderManager>
+        <hashTree />
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Seckill capacity" enabled="true">
+          <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
+            <collectionProp name="Arguments.arguments">
+              <elementProp name="" elementType="HTTPArgument">
+                <boolProp name="HTTPArgument.always_encode">false</boolProp>
+                <stringProp name="Argument.value" />
+                <stringProp name="Argument.metadata">=</stringProp>
+              </elementProp>
+            </collectionProp>
+          </elementProp>
+          <stringProp name="HTTPSampler.domain">127.0.0.1</stringProp>
+          <stringProp name="HTTPSampler.port">${__P(port)}</stringProp>
+          <stringProp name="HTTPSampler.protocol">http</stringProp>
+          <stringProp name="HTTPSampler.path">${request_path}</stringProp>
+          <stringProp name="HTTPSampler.method">${request_method}</stringProp>
+          <stringProp name="HTTPSampler.connect_timeout">3000</stringProp>
+          <stringProp name="HTTPSampler.response_timeout">10000</stringProp>
+          <boolProp name="HTTPSampler.follow_redirects">false</boolProp>
+          <boolProp name="HTTPSampler.auto_redirects">false</boolProp>
+          <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+          <boolProp name="HTTPSampler.postBodyRaw">true</boolProp>
+        </HTTPSamplerProxy>
+        <hashTree>
+          <JSR223PreProcessor guiclass="TestBeanGUI" testclass="JSR223PreProcessor" testname="Prepare measured or warmup request" enabled="true">
+            <stringProp name="scriptLanguage">groovy</stringProp>
+            <stringProp name="cacheKey">true</stringProp>
+            <stringProp name="filename">D:\LearnSpace\Backend\MicroComment\LocalPerks\tests\load\capacity_prepare.groovy</stringProp>
+            <stringProp name="script" />
+          </JSR223PreProcessor>
+          <hashTree />
+          <JSR223PostProcessor guiclass="TestBeanGUI" testclass="JSR223PostProcessor" testname="Classify actual business response" enabled="true">
+            <stringProp name="scriptLanguage">groovy</stringProp>
+            <stringProp name="cacheKey">true</stringProp>
+            <stringProp name="filename">D:\LearnSpace\Backend\MicroComment\LocalPerks\tests\load\capacity_classify.groovy</stringProp>
+            <stringProp name="script" />
+          </JSR223PostProcessor>
+          <hashTree />
+        </hashTree>
+      </hashTree>
+      <SetupThreadGroup guiclass="SetupThreadGroupGui" testclass="SetupThreadGroup" testname="Warmup marker" enabled="true">
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Marker">
+          <stringProp name="LoopController.loops">1</stringProp>
+          <boolProp name="LoopController.continue_forever">false</boolProp>
+        </elementProp>
+        <stringProp name="ThreadGroup.num_threads">1</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">1</stringProp>
+      </SetupThreadGroup>
+      <hashTree>
+        <JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="warmup.marker" enabled="true">
+          <stringProp name="scriptLanguage">groovy</stringProp>
+          <stringProp name="cacheKey">true</stringProp>
+          <stringProp name="filename" />
+          <stringProp name="script">long epoch = System.currentTimeMillis()
+props.put('mainEpoch',Long.toString(epoch))
+new File(props.get('clockFile')).text = Long.toString(epoch)
+vars.put('bucket','warmup')</stringProp>
+        </JSR223Sampler>
+        <hashTree />
+      </hashTree>
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Persistent clients with shared throughput timer" enabled="true">
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop">
+          <stringProp name="LoopController.loops">-1</stringProp>
+          <boolProp name="LoopController.continue_forever">false</boolProp>
+        </elementProp>
+        <stringProp name="ThreadGroup.num_threads">400</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">10</stringProp>
+        <stringProp name="ThreadGroup.duration">${__P(duration)}</stringProp>
+        <stringProp name="ThreadGroup.delay">0</stringProp>
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+      </ThreadGroup>
+      <hashTree>
+        <JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="Pace without recording a second HTTP request" enabled="true">
+          <stringProp name="scriptLanguage">groovy</stringProp>
+          <stringProp name="cacheKey">true</stringProp>
+          <stringProp name="filename" />
+          <stringProp name="script">SampleResult.setIgnore()</stringProp>
+        </JSR223Sampler>
+        <hashTree>
+          <ConstantThroughputTimer guiclass="TestBeanGUI" testclass="ConstantThroughputTimer" testname="Shared request rate per group" enabled="true">
+            <intProp name="calcMode">2</intProp>
+            <stringProp name="throughput">${__P(perMinute)}</stringProp>
+          </ConstantThroughputTimer>
+          <hashTree />
+        </hashTree>
+        <CSVDataSet guiclass="TestBeanGUI" testclass="CSVDataSet" testname="One identity per offered request" enabled="true">
+          <stringProp name="filename">${__P(fixtures)}</stringProp>
+          <stringProp name="fileEncoding">UTF-8</stringProp>
+          <stringProp name="variableNames">uid,token</stringProp>
+          <stringProp name="delimiter">,</stringProp>
+          <stringProp name="shareMode">shareMode.all</stringProp>
+          <boolProp name="ignoreFirstLine">false</boolProp>
+          <boolProp name="quotedData">false</boolProp>
+          <boolProp name="recycle">false</boolProp>
+          <boolProp name="stopThread">true</boolProp>
+        </CSVDataSet>
+        <hashTree />
+        <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="Identity and JSON headers" enabled="true">
+          <collectionProp name="HeaderManager.headers">
+            <elementProp name="" elementType="Header">
+              <stringProp name="Header.name">Authorization</stringProp>
+              <stringProp name="Header.value">${token}</stringProp>
+            </elementProp>
+            <elementProp name="" elementType="Header">
+              <stringProp name="Header.name">X-Forwarded-For</stringProp>
+              <stringProp name="Header.value">127.0.0.1</stringProp>
+            </elementProp>
+            <elementProp name="" elementType="Header">
+              <stringProp name="Header.name">Content-Type</stringProp>
+              <stringProp name="Header.value">application/json</stringProp>
+            </elementProp>
+          </collectionProp>
+        </HeaderManager>
+        <hashTree />
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Seckill capacity" enabled="true">
+          <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
+            <collectionProp name="Arguments.arguments">
+              <elementProp name="" elementType="HTTPArgument">
+                <boolProp name="HTTPArgument.always_encode">false</boolProp>
+                <stringProp name="Argument.value" />
+                <stringProp name="Argument.metadata">=</stringProp>
+              </elementProp>
+            </collectionProp>
+          </elementProp>
+          <stringProp name="HTTPSampler.domain">127.0.0.1</stringProp>
+          <stringProp name="HTTPSampler.port">${__P(port)}</stringProp>
+          <stringProp name="HTTPSampler.protocol">http</stringProp>
+          <stringProp name="HTTPSampler.path">${request_path}</stringProp>
+          <stringProp name="HTTPSampler.method">${request_method}</stringProp>
+          <stringProp name="HTTPSampler.connect_timeout">3000</stringProp>
+          <stringProp name="HTTPSampler.response_timeout">10000</stringProp>
+          <boolProp name="HTTPSampler.follow_redirects">false</boolProp>
+          <boolProp name="HTTPSampler.auto_redirects">false</boolProp>
+          <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+          <boolProp name="HTTPSampler.postBodyRaw">true</boolProp>
+        </HTTPSamplerProxy>
+        <hashTree>
+          <JSR223PreProcessor guiclass="TestBeanGUI" testclass="JSR223PreProcessor" testname="Prepare measured or warmup request" enabled="true">
+            <stringProp name="scriptLanguage">groovy</stringProp>
+            <stringProp name="cacheKey">true</stringProp>
+            <stringProp name="filename">D:\LearnSpace\Backend\MicroComment\LocalPerks\tests\load\capacity_prepare.groovy</stringProp>
+            <stringProp name="script" />
+          </JSR223PreProcessor>
+          <hashTree />
+          <JSR223PostProcessor guiclass="TestBeanGUI" testclass="JSR223PostProcessor" testname="Classify actual business response" enabled="true">
+            <stringProp name="scriptLanguage">groovy</stringProp>
+            <stringProp name="cacheKey">true</stringProp>
+            <stringProp name="filename">D:\LearnSpace\Backend\MicroComment\LocalPerks\tests\load\capacity_classify.groovy</stringProp>
+            <stringProp name="script" />
+          </JSR223PostProcessor>
+          <hashTree />
+        </hashTree>
+      </hashTree>
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>

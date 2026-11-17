@@ -1,0 +1,13 @@
+services:
+  frontend:
+    build: .
+    container_name: localperks-web
+    ports:
+      - "8080:80"
+    volumes:
+      - type: bind
+        source: ${HM_DP_IMAGE_DIR:-./public/imgs}
+        target: /usr/share/nginx/html/imgs
+        read_only: true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

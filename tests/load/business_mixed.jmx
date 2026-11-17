@@ -1,0 +1,176 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3">
+  <hashTree>
+    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="Local mixed business journeys" enabled="true">
+      <stringProp name="TestPlan.comments">90% browsing sessions; 6% pay, 2% cancel, 1% abandon, 1% scarce. Assumed workload, not production traffic replay.</stringProp>
+    </TestPlan>
+    <hashTree>
+      <org.apache.jmeter.threads.openmodel.OpenModelThreadGroup guiclass="org.apache.jmeter.threads.openmodel.gui.OpenModelThreadGroupGui" testclass="org.apache.jmeter.threads.openmodel.OpenModelThreadGroup" testname="Offered customer sessions" enabled="true">
+        <stringProp name="OpenModelThreadGroup.schedule">rate(${__P(rate)}/sec) random_arrivals(${__P(seconds)} sec) rate(${__P(rate)}/sec) pause(35 sec)</stringProp>
+        <longProp name="OpenModelThreadGroup.random_seed">5107</longProp>
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+      </org.apache.jmeter.threads.openmodel.OpenModelThreadGroup>
+      <hashTree>
+        <CSVDataSet guiclass="TestBeanGUI" testclass="CSVDataSet" testname="One authenticated synthetic user per session" enabled="true">
+          <stringProp name="filename">${__P(fixtures)}</stringProp>
+          <stringProp name="fileEncoding">UTF-8</stringProp>
+          <stringProp name="variableNames">uid,token</stringProp>
+          <stringProp name="delimiter">,</stringProp>
+          <stringProp name="shareMode">shareMode.all</stringProp>
+          <boolProp name="ignoreFirstLine">false</boolProp>
+          <boolProp name="quotedData">false</boolProp>
+          <boolProp name="recycle">false</boolProp>
+          <boolProp name="stopThread">true</boolProp>
+        </CSVDataSet>
+        <hashTree />
+        <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="Identity and JSON headers" enabled="true">
+          <collectionProp name="HeaderManager.headers">
+            <elementProp name="" elementType="Header">
+              <stringProp name="Header.name">Authorization</stringProp>
+              <stringProp name="Header.value">${token}</stringProp>
+            </elementProp>
+            <elementProp name="" elementType="Header">
+              <stringProp name="Header.name">X-Forwarded-For</stringProp>
+              <stringProp name="Header.value">${clientIp}</stringProp>
+            </elementProp>
+            <elementProp name="" elementType="Header">
+              <stringProp name="Header.name">Content-Type</stringProp>
+              <stringProp name="Header.value">application/json</stringProp>
+            </elementProp>
+          </collectionProp>
+        </HeaderManager>
+        <hashTree />
+        <WhileController guiclass="WhileControllerGui" testclass="WhileController" testname="Browse then transact and verify" enabled="true">
+          <stringProp name="WhileController.condition">${__groovy(vars.get('done') != 'true')}</stringProp>
+        </WhileController>
+        <hashTree>
+          <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Business request" enabled="true">
+            <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
+              <collectionProp name="Arguments.arguments">
+                <elementProp name="" elementType="HTTPArgument">
+                  <boolProp name="HTTPArgument.always_encode">false</boolProp>
+                  <stringProp name="Argument.value">${request_body}</stringProp>
+                  <stringProp name="Argument.metadata">=</stringProp>
+                </elementProp>
+              </collectionProp>
+            </elementProp>
+            <stringProp name="HTTPSampler.domain">127.0.0.1</stringProp>
+            <stringProp name="HTTPSampler.port">${__P(port)}</stringProp>
+            <stringProp name="HTTPSampler.protocol">http</stringProp>
+            <stringProp name="HTTPSampler.path">${request_path}</stringProp>
+            <stringProp name="HTTPSampler.method">${request_method}</stringProp>
+            <stringProp name="HTTPSampler.connect_timeout">3000</stringProp>
+            <stringProp name="HTTPSampler.response_timeout">10000</stringProp>
+            <boolProp name="HTTPSampler.follow_redirects">false</boolProp>
+            <boolProp name="HTTPSampler.auto_redirects">false</boolProp>
+            <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+            <boolProp name="HTTPSampler.postBodyRaw">true</boolProp>
+          </HTTPSamplerProxy>
+          <hashTree>
+            <JSR223PreProcessor guiclass="TestBeanGUI" testclass="JSR223PreProcessor" testname="Prepare next business step" enabled="true">
+              <stringProp name="scriptLanguage">groovy</stringProp>
+              <stringProp name="cacheKey">true</stringProp>
+              <stringProp name="filename">D:\LearnSpace\Backend\MicroComment\LocalPerks\tests\load\business_prepare.groovy</stringProp>
+              <stringProp name="script" />
+            </JSR223PreProcessor>
+            <hashTree />
+            <JSR223Timer guiclass="TestBeanGUI" testclass="JSR223Timer" testname="Customer think time" enabled="true">
+              <stringProp name="scriptLanguage">groovy</stringProp>
+              <stringProp name="cacheKey">true</stringProp>
+              <stringProp name="filename" />
+              <stringProp name="script">return Long.parseLong(vars.get('pause_ms') ?: '0')</stringProp>
+            </JSR223Timer>
+            <hashTree />
+            <JSR223PostProcessor guiclass="TestBeanGUI" testclass="JSR223PostProcessor" testname="Validate business state and advance" enabled="true">
+              <stringProp name="scriptLanguage">groovy</stringProp>
+              <stringProp name="cacheKey">true</stringProp>
+              <stringProp name="filename">D:\LearnSpace\Backend\MicroComment\LocalPerks\tests\load\business_assert.groovy</stringProp>
+              <stringProp name="script" />
+            </JSR223PostProcessor>
+            <hashTree />
+          </hashTree>
+        </hashTree>
+      </hashTree>
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Shop operator updates" enabled="true">
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop">
+          <boolProp name="LoopController.continue_forever">false</boolProp>
+          <stringProp name="LoopController.loops">-1</stringProp>
+        </elementProp>
+        <stringProp name="ThreadGroup.num_threads">1</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">1</stringProp>
+        <stringProp name="ThreadGroup.duration">${__P(seconds)}</stringProp>
+        <stringProp name="ThreadGroup.delay">0</stringProp>
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+      </ThreadGroup>
+      <hashTree>
+        <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="Identity and JSON headers" enabled="true">
+          <collectionProp name="HeaderManager.headers">
+            <elementProp name="" elementType="Header">
+              <stringProp name="Header.name">Authorization</stringProp>
+              <stringProp name="Header.value">${__P(adminToken)}</stringProp>
+            </elementProp>
+            <elementProp name="" elementType="Header">
+              <stringProp name="Header.name">X-Forwarded-For</stringProp>
+              <stringProp name="Header.value">198.19.0.1</stringProp>
+            </elementProp>
+            <elementProp name="" elementType="Header">
+              <stringProp name="Header.name">Content-Type</stringProp>
+              <stringProp name="Header.value">application/json</stringProp>
+            </elementProp>
+          </collectionProp>
+        </HeaderManager>
+        <hashTree />
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="admin.shop.update" enabled="true">
+          <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
+            <collectionProp name="Arguments.arguments">
+              <elementProp name="" elementType="HTTPArgument">
+                <boolProp name="HTTPArgument.always_encode">false</boolProp>
+                <stringProp name="Argument.value">${update_body}</stringProp>
+                <stringProp name="Argument.metadata">=</stringProp>
+              </elementProp>
+            </collectionProp>
+          </elementProp>
+          <stringProp name="HTTPSampler.domain">127.0.0.1</stringProp>
+          <stringProp name="HTTPSampler.port">${__P(port)}</stringProp>
+          <stringProp name="HTTPSampler.protocol">http</stringProp>
+          <stringProp name="HTTPSampler.path">/shop</stringProp>
+          <stringProp name="HTTPSampler.method">PUT</stringProp>
+          <stringProp name="HTTPSampler.connect_timeout">3000</stringProp>
+          <stringProp name="HTTPSampler.response_timeout">10000</stringProp>
+          <boolProp name="HTTPSampler.follow_redirects">false</boolProp>
+          <boolProp name="HTTPSampler.auto_redirects">false</boolProp>
+          <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+          <boolProp name="HTTPSampler.postBodyRaw">true</boolProp>
+        </HTTPSamplerProxy>
+        <hashTree>
+          <JSR223PreProcessor guiclass="TestBeanGUI" testclass="JSR223PreProcessor" testname="Change a hot shop address" enabled="true">
+            <stringProp name="scriptLanguage">groovy</stringProp>
+            <stringProp name="cacheKey">true</stringProp>
+            <stringProp name="filename" />
+            <stringProp name="script">import groovy.json.JsonOutput
+int n = Integer.parseInt(vars.get('update_n') ?: '0') + 1
+vars.put('update_n', n.toString())
+vars.put('update_body', JsonOutput.toJson([id:100000 + n % 50, address:'updated-' + props.get('phaseSeed') + '-' + n]))
+</stringProp>
+          </JSR223PreProcessor>
+          <hashTree />
+          <ConstantTimer guiclass="ConstantTimerGui" testclass="ConstantTimer" testname="One operator change every five seconds" enabled="true">
+            <stringProp name="ConstantTimer.delay">5000</stringProp>
+          </ConstantTimer>
+          <hashTree />
+          <JSR223PostProcessor guiclass="TestBeanGUI" testclass="JSR223PostProcessor" testname="Verify update acknowledgement" enabled="true">
+            <stringProp name="scriptLanguage">groovy</stringProp>
+            <stringProp name="cacheKey">true</stringProp>
+            <stringProp name="filename" />
+            <stringProp name="script">import groovy.json.JsonSlurper
+try { def b = new JsonSlurper().parseText(prev.responseDataAsString); prev.setSuccessful(prev.responseCode == '200' &amp;&amp; b.success == true) }
+catch(Exception ignored) { prev.setSuccessful(false) }
+</stringProp>
+          </JSR223PostProcessor>
+          <hashTree />
+        </hashTree>
+      </hashTree>
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>
