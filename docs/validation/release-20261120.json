@@ -1,0 +1,26 @@
+{
+  "date": "2026-11-20",
+  "remote_base_commit": "c04abc0",
+  "java": {
+    "command": "mvn -o clean verify",
+    "exit_code": 0,
+    "passed": 73,
+    "conditionally_skipped": 4,
+    "artifact": "localperks-backend-0.0.1-SNAPSHOT.jar",
+    "removed_eligibility_reader_absent_from_jar": true
+  },
+  "agent": {
+    "command": "python tests/persistence/run.py",
+    "source_run": "v03-20261120-105404-5b78e1a1",
+    "passed": 183,
+    "skipped": 2,
+    "model_calls": 0,
+    "storage": "isolated PostgreSQL and Redis",
+    "http_and_model_providers": "test doubles",
+    "skipped_requirements": ["imported pgvector knowledge corpus", "explicit 2000-user model-double load flag"]
+  },
+  "seckill_correctness": "redis-admission-20261120.json",
+  "original_data_volumes_preserved": true,
+  "raw_runtime_logs": "Generated locally under artifacts; excluded from public source",
+  "note": "Overlapping suites are not added together. No new QPS or production SLA claim."
+}

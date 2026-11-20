@@ -6,7 +6,6 @@ import com.hmdp.dto.UserDTO;
 import com.hmdp.dto.VoucherOrderStatusResult;
 import com.hmdp.mapper.MqMessageMapper;
 import com.hmdp.mapper.VoucherOrderMapper;
-import com.hmdp.entity.SeckillVoucher;
 import com.hmdp.mq.SeckillAdmissionRepository;
 import com.hmdp.mq.SeckillAdmissionState;
 import com.hmdp.mq.SeckillOrderMessageService;
@@ -19,7 +18,6 @@ import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.test.util.ReflectionTestUtils;
-import java.time.LocalDateTime;
 import java.util.Collections;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -38,7 +36,6 @@ class VoucherOrderAdmissionTest {
         UserDTO user = new UserDTO();
         user.setId(1L);
         UserHolder.saveUser(user);
-        ReflectionTestUtils.setField(service, "admission", admission);
         ReflectionTestUtils.setField(service, "admissionState", state);
         ReflectionTestUtils.setField(service, "mqMessageMapper", mock(MqMessageMapper.class));
         ReflectionTestUtils.setField(service, "baseMapper", mock(VoucherOrderMapper.class));
@@ -48,8 +45,8 @@ class VoucherOrderAdmissionTest {
         RedisIdWorker ids = mock(RedisIdWorker.class);
         when(ids.nextId("order")).thenReturn(42L);
         ReflectionTestUtils.setField(service, "redisIdWorker", ids);
-        when(admission.inspect(1L, 7L)).thenReturn(new SeckillAdmissionRepository.Eligibility(
-                null, LocalDateTime.now().minusHours(1), LocalDateTime.now().plusHours(1)));
+        when(state.purchased(anyLong(), anyLong())).thenReturn(null);
+        when(state.previous(anyLong(), anyLong())).thenReturn(null);
     }
 
     @AfterEach
@@ -117,11 +114,35 @@ class VoucherOrderAdmissionTest {
     }
 
     @Test
-    void shouldRejectEligibilityOverloadBeforeAllocatingIdOrReservingInventory() {
-        when(admission.inspect(1L, 7L)).thenThrow(new RateLimitExceededException(1000));
-        assertThrows(RateLimitExceededException.class, () -> service.seckillVoucher(7L));
-        verifyNoInteractions(redis, messages, state);
-        RedisIdWorker ids = (RedisIdWorker) ReflectionTestUtils.getField(service, "redisIdWorker");
-        verify(ids, never()).nextId(anyString());
+    void shouldNotQuerySqlOnAnyAdmissionOutcome() {
+        for (long code : new long[]{0, 1, 2, 4, 5}) {
+            when(redis.execute(any(RedisScript.class), anyList(), anyString(), anyString(), anyString(), anyString(), anyString()))
+                    .thenReturn(code);
+            service.seckillVoucher(7L);
+        }
+        verifyNoInteractions(admission,
+                ReflectionTestUtils.getField(service, "mqMessageMapper"),
+                ReflectionTestUtils.getField(service, "baseMapper"));
+    }
+
+    @Test
+    void shouldRejectMissingPreparedStateWithoutPublishingOrQueryingSql() {
+        when(redis.execute(any(RedisScript.class), anyList(), anyString(), anyString(), anyString(), anyString(), anyString()))
+                .thenReturn(5L);
+        Result result = service.seckillVoucher(7L);
+        assertFalse(result.getSuccess());
+        assertTrue(result.getErrorMsg().contains("暂未就绪"));
+        verifyNoInteractions(messages, admission);
+    }
+
+    @Test
+    void shouldReturnPermanentPurchaseIdEvenAfterItsReceiptHasExpired() {
+        when(redis.execute(any(RedisScript.class), anyList(), anyString(), anyString(), anyString(), anyString(), anyString()))
+                .thenReturn(2L);
+        when(state.purchased(7L, 1L)).thenReturn(41L);
+        SeckillOrderSubmitResult result = (SeckillOrderSubmitResult) service.seckillVoucher(7L).getData();
+        assertEquals(41L, result.getOrderId());
+        verifyNoInteractions(messages, admission);
+        verify(state, never()).receipt(anyLong(), anyLong());
     }
 }

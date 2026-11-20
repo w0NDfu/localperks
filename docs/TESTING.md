@@ -8,6 +8,14 @@
 
 订单受理、消息合批、权限和状态相关代码也有使用 Mockito 的独立测试，可以用 Maven 的 `-Dtest=...` 选择执行。
 
+2026-11-20 的 Redis 秒杀入口回归可从仓库根目录执行：
+
+```powershell
+.\agent-service\.venv\Scripts\python.exe tests/load/run_redis_admission.py
+```
+
+脚本建立独立 MySQL、Redis、RocketMQ 并运行真实 Java JAR，覆盖 MySQL 暂停时仍可受理、恢复后异步落库、并发库存、活动预热与取消补偿；随后执行包含 11 项真实 MySQL/Redis 集成用例的 53 项定向 Java 测试。原始结果由脚本保存到本地 `artifacts/test-runs/`，公开[验证摘要](validation/redis-admission-20261120.json)及[设计说明](SECKILL_REDIS_ADMISSION.md)。测试完成自动清理隔离实例并停止项目服务，保留原有业务数据卷。本轮是正确性验证，不是 QPS 容量测试。
+
 ## 前端
 
 在 `frontend` 执行 `npm ci`，再运行 `npm run lint`、`npm run test`、`npm run build`。浏览器测试使用 Playwright 和 API 替身，不向真实业务服务提交订单。Windows 可设置 `PLAYWRIGHT_CHANNEL=msedge` 使用已安装的 Edge。
@@ -31,6 +39,8 @@
 可设置 `AGENT_TEST_CLUSTER_LOAD=1` 额外运行2000独立用户任务。它使用两个应用实例和模型替身；另有两个独立Python进程的协调回归。报告保存在本地 `artifacts/test-runs/`，不进入公开源码。
 
 ## 历史验证与重命名
+
+2026-11-20 更新在待发布 monorepo 目录重新验证：`mvn -o clean verify` 构建通过，默认测试73项通过、4项按条件跳过；Agent 完整隔离回归183项通过、2项跳过，没有真实模型调用。前述 Java 默认测试与53项定向集成回归存在重叠，不相加。[发布检查](validation/release-20261120.json)
 
 2026-11-17 公开整理版本重新验证：Java 构建成功，7个订单及消息测试类共41项通过；前端 ESLint、27项单测、类型检查与构建通过，Edge 的6项助手页面测试通过；Agent 隔离 PostgreSQL/Redis 回归164项通过、2项跳过。跳过项分别是需要知识导入的 pgvector 检索与需要显式开启的2000用户负载，没有真实模型调用。隔离运行器使用短临时路径，避免 Windows 深目录下的嵌套清理测试超过路径长度限制。
 

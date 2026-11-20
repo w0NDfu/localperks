@@ -24,7 +24,7 @@ Java/Redis/MySQL/RocketMQ/pgvector 启动和知识导入见[根目录 README](..
 
 原 `/agent/chat`、SSE 和任务恢复接口保留。游客只能走原公开查询；异步任务要求 Java 登录身份。前端根据 `async_tasks` 能力标记接入异步接口。
 
-首次升级运行 `python -m api.bootstrap`，为已有 `.env.platform` 补入共享加密密钥，保留原数据库和模型凭据。集群配置、失败恢复边界和测试见[共享调度文档](../docs/AGENT_SHARED_CONCURRENCY.md)。同步兼容接口仍使用会话锁；跨实例 FIFO 的入口是 `/agent/tasks`。
+首次升级运行 `python -m api.bootstrap`，为已有 `.env.platform` 补入共享加密密钥，保留原数据库和模型凭据。集群配置、失败恢复边界和测试见[共享调度文档](../docs/AGENT_SHARED_CONCURRENCY.md)。同步兼容接口使用 PostgreSQL 会话执行权；共享队列的跨实例 FIFO 入口是 `/agent/tasks`。
 
 ## 验证与可选实验
 
@@ -33,3 +33,7 @@ Java/Redis/MySQL/RocketMQ/pgvector 启动和知识导入见[根目录 README](..
 故障诊断默认不注册，需显式 `AGENT_OPS_ENABLED=true`；Java 和前端还需要各自实验开关及管理员凭证。历史 `ops/` 代码与报告保留，排除出主系统能力及简历客服指标。
 
 结束后关闭本服务及项目 Java/Vite，执行 `docker compose --profile agent --profile dashboard stop`，保留容器与数据卷。
+
+## 执行权与持久会话
+
+任务领取使用递增 execution_epoch 与执行者租约，后台条件续租；过期执行者不能提交结果、事件或检查点。任务结果、会话历史和缓存更新 Outbox 在同一 PostgreSQL 事务中保存，Redis 只保存带会话 revision 的可重建缓存。恢复同一任务沿用原交易操作编号。升级前停止旧写入实例，启动自动迁移 schema v3，保留原数据与配置。详情见[执行权与会话提交](../docs/AGENT_EXECUTION_FENCING.md)。

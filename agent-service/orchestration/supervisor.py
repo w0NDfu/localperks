@@ -121,7 +121,12 @@ class Supervisor:
                 if target:
                     target_id = target[1] or target[2]
                     values = {"operation": operation, "voucher_id" if operation == "seckill" else "order_id": int(target_id) if operation == "seckill" else target_id}
-                    action = await ActionService(self.store, self.settings).prepare(ActionRequest.model_validate(values), ctx)
+                    # A recovered execution of the same task must reuse its action.
+                    # Epoch/worker identity must never become a new business key.
+                    if self.task_id:
+                        from uuid import UUID, uuid5
+                        values['idempotency_key'] = str(uuid5(UUID(self.task_id), operation + ':' + str(target_id)))
+                    action = await ActionService(self.store, self.settings).prepare(ActionRequest.model_validate(values), ctx, task_id=self.task_id)
                     return {"answer": "请核对下方操作摘要，只有点击确认后才会提交。" + action["preview"]["notice"],
                             "intent": "action", "state": AgentState.WAITING_CONFIRMATION, "action": action}
             return {"answer": "交易需要登录并核对操作摘要，再由本人显式确认；请使用交易确认入口。支付目前仅有开发模拟通道。",

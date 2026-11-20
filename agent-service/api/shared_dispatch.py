@@ -109,7 +109,7 @@ class SharedDispatcher:
         def release(c):
             changed=c.execute("UPDATE agent_jobs SET state='queued',owner=NULL,lease_until=0 WHERE task_id=%s AND owner=%s",(job['task_id'],job['owner'])).rowcount
             if changed:
-                c.execute("UPDATE agent_tasks SET state='accepted',lease_owner=NULL,lease_until=0 WHERE id=%s AND state IN ('running','interrupted')",(job['task_id'],))
+                c.execute("UPDATE agent_tasks SET state='accepted',lease_owner=NULL,lease_until=0 WHERE id=%s AND state='interrupted' AND lease_owner IS NULL",(job['task_id'],))
         await self.store.call(release)
 
     async def _retry(self,job):
@@ -150,7 +150,7 @@ class SharedDispatcher:
                     authorization = await self.vault.get(job['scope'], job['credential_ref'])
                     await self.execute(job, authorization)
                 except AgentError as exc:
-                    if exc.code in ('SESSION_BUSY','TASK_BUSY'):
+                    if exc.code in ('SESSION_BUSY','TASK_BUSY','TASK_LEASE_LOST'):
                         await self._retry(job)
                         await asyncio.sleep(.1)
                         continue

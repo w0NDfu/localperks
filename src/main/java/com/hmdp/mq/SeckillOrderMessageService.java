@@ -153,7 +153,7 @@ public class SeckillOrderMessageService {
         VoucherOrder order = admission.findOrder(message.getUserId(), message.getVoucherId());
         MqMessage terminal = admission.findMessage(message.getOrderId(), message.getUserId());
         if (order != null) {
-            receipts.finish(message, "SUCCESS");
+            receipts.finish(message, "SUCCESS", order.getId());
         } else if (terminal != null && Integer.valueOf(MQ_MESSAGE_STATUS_FAILED).equals(terminal.getStatus())) {
             redis.execute(ROLLBACK, Collections.emptyList(), message.getVoucherId().toString(),
                     message.getUserId().toString(), message.getOrderId().toString());

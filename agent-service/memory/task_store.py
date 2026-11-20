@@ -12,6 +12,7 @@ from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool, PoolTimeout
 from core.state import AgentError
+from memory.conversation_journal import ConversationJournal
 
 DB_NOW = "EXTRACT(EPOCH FROM clock_timestamp())::double precision"
 
@@ -77,7 +78,7 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
 """
 
 
-class TaskStore:
+class TaskStore(ConversationJournal):
     def __init__(self, dsn, *, schema=None, max_connections=4):
         schema = schema or os.environ.get("AGENT_STATE_SCHEMA", "agent_state")
         if not isinstance(dsn, str) or not dsn.startswith(("postgresql://", "postgres://")):
@@ -90,7 +91,8 @@ class TaskStore:
         self._leases = contextvars.ContextVar("task_leases_" + uuid.uuid4().hex, default=None)
         self.pool = ConnectionPool(dsn, min_size=0, max_size=max_connections, timeout=3,
             kwargs={"row_factory": dict_row, "connect_timeout": 3,
-                    "options": f"-c search_path={schema},pg_catalog -c statement_timeout=5000 -c lock_timeout=3000"}, open=False)
+                    "options": f"-c search_path={schema},pg_catalog -c statement_timeout=5000 -c lock_timeout=3000 "
+                               "-c idle_in_transaction_session_timeout=5000"}, open=False)
         self.pool.open()
         try:
             self.call_sync(self._initialize)
@@ -104,7 +106,10 @@ class TaskStore:
     def _initialize(self, conn):
         conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", ("localperks-state-schema:" + self.schema,))
         version_table=conn.execute('SELECT to_regclass(%s) AS name',(self.schema+'.agent_schema_version',)).fetchone()['name']
+        if version_table and conn.execute('SELECT version FROM agent_schema_version WHERE version=3').fetchone():
+            return
         if version_table and conn.execute('SELECT version FROM agent_schema_version WHERE version=2').fetchone():
+            self._migrate_conversations(conn)
             return
         conn.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(self.schema)))
         for statement in SCHEMA_SQL.split(";"):
@@ -121,6 +126,7 @@ class TaskStore:
             event = 'AFTER INSERT' if table=='agent_events' else 'AFTER INSERT OR UPDATE OF state'
             conn.execute(sql.SQL('CREATE TRIGGER agent_notify '+event+' ON {} FOR EACH ROW EXECUTE FUNCTION agent_notify_event()').format(sql.Identifier(table)))
         conn.execute('INSERT INTO agent_schema_version(version) VALUES(2) ON CONFLICT DO NOTHING')
+        self._migrate_conversations(conn)
 
     @contextmanager
     def connect(self):
@@ -145,27 +151,32 @@ class TaskStore:
 
     async def ready(self):
         try:
-            return bool(await self.call(lambda c: c.execute("SELECT version FROM agent_schema_version WHERE version=1").fetchone()))
+            return bool(await self.call(lambda c: c.execute("SELECT version FROM agent_schema_version WHERE version=3").fetchone()))
         except AgentError:
             return False
 
     def _owner(self, task_id):
-        return (self._leases.get() or {}).get(task_id)
+        lease = self.execution(task_id)
+        return lease['owner'] if lease else None
 
     def _guard(self, conn, task_id, *, require_owner=False):
-        owner = self._owner(task_id)
+        lease = self.execution(task_id)
+        owner = lease['owner'] if lease else None
         if require_owner and owner is None:
             row = conn.execute("SELECT state FROM agent_tasks WHERE id=%s FOR SHARE", (task_id,)).fetchone()
             if row is None or row['state'] == 'running':
                 raise AgentError("TASK_LEASE_LOST", "写入运行任务检查点前必须持有租约", 409)
-        if owner and not conn.execute(f"SELECT id FROM agent_tasks WHERE id=%s AND lease_owner=%s "
-                f"AND state='running' AND lease_until>{DB_NOW} FOR SHARE", (task_id, owner)).fetchone():
+        if owner and not conn.execute(f"SELECT id FROM agent_tasks WHERE id=%s AND lease_owner=%s AND execution_epoch=%s "
+                f"AND state='running' AND lease_until>{DB_NOW} FOR SHARE", (task_id, owner, lease['epoch'])).fetchone():
             raise AgentError("TASK_LEASE_LOST", "任务执行租约已失效，禁止覆盖新执行结果", 409)
 
     async def create(self, scope, session_id, request, kind="chat"):
         task_id = str(uuid.uuid4())
-        await self.call(lambda c: c.execute(f"INSERT INTO agent_tasks(id,scope,session_id,kind,state,request,created,updated) "
-            f"VALUES(%s,%s,%s,%s,'created',%s,{DB_NOW},{DB_NOW})", (task_id, scope, session_id, kind, dump(request))))
+        def create(conn):
+            conn.execute('INSERT INTO agent_conversations(scope,session_id) VALUES(%s,%s) ON CONFLICT DO NOTHING', (scope, session_id))
+            conn.execute(f"INSERT INTO agent_tasks(id,scope,session_id,kind,state,request,created,updated) "
+                f"VALUES(%s,%s,%s,%s,'created',%s,{DB_NOW},{DB_NOW})", (task_id, scope, session_id, kind, dump(request)))
+        await self.call(create)
         return task_id
 
     async def admit(self, scope, request_id, fingerprint, request, session_id=None, queue_hook=None):
@@ -182,6 +193,7 @@ class TaskStore:
                     queue_hook(conn,previous['task_id'],task['session_id'],False)
                 return previous["task_id"], False
             task_id, session = str(uuid.uuid4()), session_id or str(uuid.uuid4())
+            conn.execute('INSERT INTO agent_conversations(scope,session_id) VALUES(%s,%s) ON CONFLICT DO NOTHING', (scope, session))
             conn.execute(f"INSERT INTO agent_tasks(id,scope,session_id,kind,state,request,created,updated) "
                          f"VALUES(%s,%s,%s,'chat','accepted',%s,{DB_NOW},{DB_NOW})",
                          (task_id, scope, session, dump(request)))
@@ -205,32 +217,72 @@ class TaskStore:
             row["state"], row["recovery_required"] = "interrupted", True
         return row
 
-    async def claim(self, scope, task_id, request=None, lease_seconds=130, admitted=False):
+    async def claim(self, scope, task_id, request=None, lease_seconds=130, admitted=False, job_owner=None):
         if not 0 < lease_seconds <= 600:
             raise ValueError("Invalid bounded task lease")
         owner = str(uuid.uuid4())
         def take(conn):
+            if job_owner:
+                job = conn.execute(f"SELECT task_id FROM agent_jobs WHERE task_id=%s AND owner=%s "
+                    f"AND state='running' AND lease_until>{DB_NOW} FOR UPDATE", (task_id, job_owner)).fetchone()
+                if not job:
+                    raise AgentError('TASK_LEASE_LOST', '队列执行权已被接管', 409)
             terminal_guard = " AND state IN ('accepted','running')" if admitted else ""
             row = conn.execute(f"UPDATE agent_tasks SET state='running',lease_until={DB_NOW}+%s,updated={DB_NOW},"
-                f"revision=revision+1,lease_owner=%s,request=COALESCE(%s,request) WHERE id=%s AND scope=%s "
-                f"AND (state!='running' OR lease_until<{DB_NOW}){terminal_guard} RETURNING revision",
+                f"revision=revision+1,execution_epoch=execution_epoch+1,lease_owner=%s,request=COALESCE(%s,request) WHERE id=%s AND scope=%s "
+                f"AND (state!='running' OR lease_until<{DB_NOW}){terminal_guard} RETURNING execution_epoch,session_id",
                 (lease_seconds, owner, dump(request) if request is not None else None, task_id, scope)).fetchone()
             if row is None:
                 if not conn.execute("SELECT id FROM agent_tasks WHERE id=%s AND scope=%s", (task_id, scope)).fetchone():
                     raise AgentError("TASK_NOT_FOUND", "任务不存在或不属于当前用户", 404)
                 raise AgentError("TASK_BUSY", "任务正在执行，请等待或稍后恢复", 409)
+            session = self._conversation(conn, scope, row['session_id'], create=True, lock=True)
+            active = session['active_task_id']
+            if active and active != task_id:
+                running = conn.execute(f"SELECT id FROM agent_tasks WHERE id=%s AND state='running' AND lease_until>{DB_NOW}", (active,)).fetchone()
+                if running:
+                    raise AgentError('SESSION_BUSY', '这段对话正在处理中，请等待本轮结束', 409)
+            conn.execute('UPDATE agent_conversations SET active_task_id=%s WHERE scope=%s AND session_id=%s',
+                         (task_id, scope, row['session_id']))
             conn.execute(f"INSERT INTO agent_events(task_id,event,created) VALUES(%s,%s,{DB_NOW})", (task_id, dump({"type": "workflow_started", "resumed": request is not None})))
-        await self.call(take)
-        self._leases.set({**(self._leases.get() or {}), task_id: owner})
+            return {'epoch': row['execution_epoch'], 'session': row['session_id'], 'scope': scope,
+                    'base_revision': session['revision'], 'history': self._history(conn, scope, row['session_id'])}
+        lease = await self.call(take)
+        lease.update(owner=owner, seconds=lease_seconds, job_owner=job_owner)
+        self._leases.set({**(self._leases.get() or {}), task_id: lease})
+        return lease['history']
 
-    async def finish(self, task_id, state, output):
+    async def finish(self, task_id, state, output, *, turn=None):
+        lease = self.execution(task_id)
         def finish(conn):
-            self._guard(conn, task_id)
-            changed = conn.execute(f"UPDATE agent_tasks SET state=%s,output=%s,lease_until=0,lease_owner=NULL,updated={DB_NOW} "
-                "WHERE id=%s AND (lease_owner=%s OR (lease_owner IS NULL AND state!='running'))",
-                (state, dump(output), task_id, self._owner(task_id))).rowcount
-            if not changed:
+            if lease:
+                row = conn.execute(f"UPDATE agent_tasks SET state=%s,output=%s,lease_until=0,lease_owner=NULL,updated={DB_NOW} "
+                    f"WHERE id=%s AND lease_owner=%s AND execution_epoch=%s AND state='running' AND lease_until>{DB_NOW} RETURNING scope,session_id",
+                    (state, dump(output), task_id, lease['owner'], lease['epoch'])).fetchone()
+            else:
+                if turn is not None:
+                    raise AgentError('TASK_LEASE_LOST', '提交会话必须持有执行权', 409)
+                row = conn.execute(f"UPDATE agent_tasks SET state=%s,output=%s,updated={DB_NOW} WHERE id=%s "
+                    "AND lease_owner IS NULL AND state IN ('created','accepted','waiting_auth','interrupted') RETURNING scope,session_id",
+                    (state, dump(output), task_id)).fetchone()
+            if not row:
                 raise AgentError("TASK_LEASE_LOST", "任务租约已被其他执行者接管", 409)
+            session = self._conversation(conn, row['scope'], row['session_id'], create=True, lock=True)
+            if turn is not None:
+                if session['active_task_id'] != task_id or session['revision'] != lease['base_revision']:
+                    raise AgentError('TASK_LEASE_LOST', '会话执行权或历史版本已变化', 409)
+                value = {**turn, 'task_id': task_id}
+                conn.execute(f"INSERT INTO agent_turns(task_id,scope,session_id,data,updated) VALUES(%s,%s,%s,%s,{DB_NOW}) "
+                    f"ON CONFLICT(task_id) DO UPDATE SET data=excluded.data,updated={DB_NOW}",
+                    (task_id, row['scope'], row['session_id'], dump(value)))
+                revision = session['revision'] + 1
+                conn.execute('UPDATE agent_conversations SET revision=%s WHERE scope=%s AND session_id=%s',
+                             (revision, row['scope'], row['session_id']))
+                conn.execute(f"INSERT INTO agent_session_cache_outbox(scope,session_id,revision,next_attempt) VALUES(%s,%s,%s,{DB_NOW}) "
+                    f"ON CONFLICT(scope,session_id) DO UPDATE SET revision=excluded.revision,next_attempt={DB_NOW},attempts=0",
+                    (row['scope'], row['session_id'], revision))
+            conn.execute('UPDATE agent_conversations SET active_task_id=NULL WHERE scope=%s AND session_id=%s AND active_task_id=%s',
+                         (row['scope'], row['session_id'], task_id))
             conn.execute(f"INSERT INTO agent_events(task_id,event,created) VALUES(%s,%s,{DB_NOW})", (task_id, dump({"type": "workflow_state", "state": state})))
         await self.call(finish)
         self._leases.set({k: v for k, v in (self._leases.get() or {}).items() if k != task_id})

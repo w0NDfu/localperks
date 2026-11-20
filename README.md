@@ -30,7 +30,7 @@
 | 商家查询 | 按名称或分类找店，结合 Redis GEO 查询附近商家，查看地址、人均价格和营业时间 |
 | 探店社区 | 发布笔记、热门笔记、点赞、关注、关注动态、共同关注、每日签到 |
 | 优惠券 | 查看普通优惠券和秒杀券，展示售价、面值、库存及使用规则；金额接口以分为单位 |
-| 秒杀下单 | 校验活动时间与历史订单，Lua 原子检查库存和一人一券资格，收到 Broker 确认后返回受理结果 |
+| 秒杀下单 | 预热活动与购买资格，Lua 原子校验活动时间、库存和一人一券，Broker 确认后返回受理结果 |
 | 本人券包 | 查看自己的订单和券，区分排队、处理中、待支付、取消等状态 |
 | 订单处理 | 模拟支付、本人取消、超时关闭与库存释放；使用状态条件更新和唯一约束处理重复请求 |
 | 热点缓存 | 店铺详情使用 Caffeine 和 Redis 两级缓存，配合布隆过滤器、空值缓存、消息通知清理 |
@@ -59,7 +59,7 @@
 | 交易后端 | Java 8 、JDK 17 、Spring Boot、MyBatis-Plus | 登录身份、商家与笔记、优惠券、库存、订单和资源归属 |
 | 缓存与消息 | Redis、Lua、Caffeine、RocketMQ | 原子预留、热点缓存、异步订单、超时消息与重试 |
 | Agent 服务 | Python 3.12、FastAPI、Tool Calling | 理解需求、编排工具、检索知识、生成解释 |
-| Agent 状态 | PostgreSQL、Redis | 任务、事件、检查点、共享队列、用户偏好和短期会话 |
+| Agent 状态 | PostgreSQL、Redis | 任务、事件、会话历史、共享队列、偏好，以及 Redis 会话缓存与短期凭据 |
 | 知识检索 | PostgreSQL/pgvector、BM25、RRF、Rerank | 保存和检索使用规则及 FAQ |
 | 前端 | Vue 3、TypeScript、Pinia、Vite、Element Plus | 业务页面、助手对话、进度通知、偏好设置和操作确认 |
 
@@ -85,15 +85,14 @@ Java 始终负责业务事实和交易结果。Agent 不直接修改库存或订
 
 ```text
 请求限流与身份校验
-  → 查询活动时间、本人历史订单
-  → Redis Lua 校验库存和资格、建立预留
+  → Redis Lua 校验已预热的活动时间、库存和购买资格，建立预留
   → RocketMQ 发送并等待 Broker 确认
   → 返回订单编号与受理状态
   → 消费者执行 MySQL 库存条件扣减、唯一约束下单
   → 更新可查询的订单结果
 ```
 
-前置查询和消息发送使用有界批处理，减少高峰时逐条查询、逐条发送的等待。查询连接池与订单写入连接池分开，防止前置查询占满写入连接。
+活动发布事务提交后预热，启动与后台扫描补齐活动状态。正常抢券请求不访问 MySQL；缓存未就绪时暂停受理，不回源查询。通过在途请求上限与有界消息发送队列控制受理规模，消息合批后仍等待对应 Broker 确认。取消后幂等释放库存，保留一人一券购买资格。[详细设计](docs/SECKILL_REDIS_ADMISSION.md)
 
 消息发送超时，保留原订单编号和预留状态，再核对结果，避免把已经发出的订单误回补。订单创建时同时写入关单任务，提交后发送延迟消息；到期检查与重试负责兜底。
 
@@ -271,7 +270,7 @@ docker compose --profile agent --profile dashboard stop
 | `EMBEDDING_MODEL` / `EMBEDDING_DIMENSIONS` | `text-embedding-3-small` / 1536 |
 | `RERANK_MODEL` | `BAAI/bge-reranker-v2-m3`，需接口支持重排协议 |
 | `LOCALPERKS_BASE_URL` | Java 地址，默认 `http://127.0.0.1:8081` |
-| `REDIS_URL` | 会话、配额和短期加密凭据的 Redis 地址 |
+| `REDIS_URL` | 会话缓存、配额和短期加密凭据的 Redis 地址 |
 | `AGENT_STATE_DSN` | 可靠任务库，未单独配置时使用 `PGVECTOR_DSN` |
 | `AGENT_CREDENTIAL_KEY` | 所有执行实例共享的加密密钥，bootstrap 生成，不能公开 |
 | `AGENT_WORKERS` | 每实例异步执行者数量，默认 16 |
@@ -311,6 +310,16 @@ docker compose --profile agent --profile dashboard stop
 完整参数见 [API 文档](docs/API.md) 和启动后的 Agent Swagger。
 
 ## 测试与验证
+
+### Redis 秒杀入口更新（2026-11-20）
+
+活动预热、入口 Redis 校验与消费者异步落库已完成；53 项定向 Java 测试通过，包含 11 项真实 MySQL/Redis 集成测试。真实 HTTP 验证覆盖暂停 MySQL 仍可受理、恢复后落库、并发抢券、取消补偿及缺失缓存拒绝。[验证摘要](docs/validation/redis-admission-20261120.json)与[复现步骤](docs/SECKILL_REDIS_ADMISSION.md)。本轮没有新增 QPS 或延迟分位数结论。
+
+发布前在本仓库目录重新执行 `mvn clean verify`，默认测试73项通过、4项按条件跳过，构建成功；Agent 在独立 PostgreSQL/Redis 上完整回归183项通过、2项跳过，未调用真实模型。跳过的两项分别需要额外知识库导入和显式开启2000用户模型替身负载。[发布检查](docs/validation/release-20261120.json)
+
+### 执行权与会话存储更新（2026-11-19）
+
+加入执行版本、心跳续租及过期写入校验；任务结果、会话历史和缓存更新任务同事务提交，Redis 按会话版本更新缓存。实际服务源码完整隔离回归181项通过、2项跳过，包含事务持锁、闲置超时和故障接管用例。升级前停掉旧写入实例，启动时自动迁移并保留原数据。[改造说明](docs/AGENT_EXECUTION_FENCING.md)
 
 ### 本次公开版本检查（2026-11-17）
 

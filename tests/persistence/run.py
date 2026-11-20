@@ -50,14 +50,12 @@ async def main():
             PYTHONPATH=os.pathsep.join((str(stage), str(stage / 'tests'), str(ROOT / 'tests'))),
             PERSISTENCE_EVIDENCE=str(run.path), VALIDATION_RUN_DIR=str(run.path))
         env['AGENT_SERVICE_ROOT'] = str(stage)
-        targets = ['tests/persistence/test_postgres_state.py', str(stage / 'tests'),
+        targets = ['tests/persistence', str(stage / 'tests'),
                    'tests/integration', 'tests/reliability', 'tests/security', 'tests/aiops/test_ops_api.py', 'tests/customer_agent']
         if os.environ.get('AGENT_TEST_TARGETS'):
             targets=json.loads(os.environ['AGENT_TEST_TARGETS'])
             if not isinstance(targets,list) or not targets or not all(isinstance(item,str) for item in targets):
                 raise ValueError('AGENT_TEST_TARGETS must be a non-empty JSON list of pytest targets')
-        # Keep nested cleanup fixtures below Windows' path length limit even
-        # when the repository itself is checked out under a deep directory.
         with tempfile.TemporaryDirectory(prefix='lp-test-') as temp_base:
             temp_path = Path(temp_base).resolve()
             assert temp_path.parent == Path(tempfile.gettempdir()).resolve()

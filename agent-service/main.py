@@ -18,7 +18,7 @@ from core.config import Settings, load_settings
 from core.context import ToolContext
 from core.engine import AgentEngine
 from core.state import AgentError
-from memory.redis_memory import RedisMemory
+from memory.conversation_memory import ConversationMemory
 from models.llm_client import open_model
 from tools.java_api import JavaAPI, ShopLinkError
 from tools.shop_tools import search_shops
@@ -75,9 +75,9 @@ def create_app(*, transport: httpx.AsyncBaseTransport | None = None,
                 max_connections=current.redis_connections,timeout=current.redis_pool_wait,
                 socket_connect_timeout=2,socket_timeout=3))
             app.state.shoplink_client = client
-            app.state.memory = memory or RedisMemory(redis)
             app.state.redis = redis
             app.state.task_store = task_store or await asyncio.to_thread(TaskStore, current.state_dsn, schema=current.state_schema)
+            app.state.memory = ConversationMemory(app.state.task_store, redis, observer=memory)
             app.state.rag = rag_service or RagService(current, embedding=EmbeddingClient(current, model_transport), reranker=Reranker(current, model_transport), model_transport=model_transport)
             app.state.turn_limit = asyncio.Semaphore(current.worker_concurrency)
             app.state.harness = Harness()
@@ -99,23 +99,16 @@ def create_app(*, transport: httpx.AsyncBaseTransport | None = None,
                     raise AgentError('REAUTH_REQUIRED','身份已变化，请重新登录后重交原请求',401)
                 payload=json.loads(job['payload'])
                 execution=ChatRequest(message=payload['message'],session_id=UUID(job['session_id']),constraints=payload.get('constraints'))
-                try:
-                    await app.state.memory.load(owner,job['session_id'])
-                except AgentError as exc:
-                    if exc.code!='SESSION_NOT_FOUND':
-                        raise
-                    previous=await app.state.task_store.get(owner,job['task_id'])
-                    await app.state.memory.save(owner,job['session_id'],previous['request'].get('history',[]))
                 async def ignore(_event):
                     pass
                 with app.state.model_runtime.activate():
                     # Shared workers already own their bounded execution slot. A legacy
                     # request must not stall a claimed job outside its workflow timeout.
                     try:
-                        await run_workflow(execution,proxy,current,owner,ctx,ignore,admitted_task_id=job['task_id'])
+                        await run_workflow(execution,proxy,current,owner,ctx,ignore,admitted_task_id=job['task_id'],job_owner=job['owner'])
                     except AgentError as exc:
                         latest=await app.state.task_store.get(owner,job['task_id'])
-                        if latest['state']=='accepted' and exc.code not in ('SESSION_BUSY','TASK_BUSY'):
+                        if latest['state']=='accepted' and exc.code not in ('SESSION_BUSY','TASK_BUSY','TASK_LEASE_LOST'):
                             await app.state.task_store.finish(job['task_id'],'failed',{'error':{'code':exc.code,'message':str(exc)}})
                         raise
 
@@ -124,11 +117,13 @@ def create_app(*, transport: httpx.AsyncBaseTransport | None = None,
                 global_workers=current.global_workflow_concurrency,max_wait=current.queue_wait_seconds,
                 lease_seconds=current.turn_timeout+50)
             try:
+                await app.state.memory.start()
                 await app.state.event_hub.start()
                 await app.state.dispatcher.start()
                 yield
             finally:
                 await app.state.dispatcher.close()
+                await app.state.memory.close()
                 await app.state.event_hub.close()
                 await app.state.model_runtime.close()
                 await redis.aclose(close_connection_pool=True)
@@ -194,7 +189,7 @@ def create_app(*, transport: httpx.AsyncBaseTransport | None = None,
             finally:
                 gate.release()
 
-    async def run_workflow(body, request, current, scope, ctx, emit, admitted_task_id=None):
+    async def run_workflow(body, request, current, scope, ctx, emit, admitted_task_id=None, job_owner=None):
         memory_store = request.app.state.memory
         store = request.app.state.task_store
         task_id = admitted_task_id
@@ -208,19 +203,11 @@ def create_app(*, transport: httpx.AsyncBaseTransport | None = None,
                 restored = await store.get(scope, str(body.task_id)) if body.task_id else None
                 if restored and body.session_id and str(body.session_id) != restored["session_id"]:
                     raise AgentError("SESSION_CONFLICT", "恢复任务必须使用原会话", 409)
+                if restored and restored['state'] == 'completed':
+                    if body.message.strip() in {'继续', '恢复', '重试'} and body.constraints is None:
+                        return restored['output']
+                    raise AgentError('TASK_ALREADY_COMPLETED', '任务已完成，请为新问题创建新任务', 409)
                 requested_session = str(body.session_id) if body.session_id else restored["session_id"] if restored else None
-                if restored:
-                    try:
-                        await memory_store.load(scope, requested_session)
-                    except AgentError as exc:
-                        if exc.code != "SESSION_NOT_FOUND":
-                            raise
-                        recovered = restored["request"].get("history", [])
-                        output = restored["output"] or {}
-                        if output.get("answer"):
-                            recovered = recovered + [{"user": restored["request"]["message"], "assistant": output["answer"],
-                                                       "trace": [], "constraints": output.get("constraints"), "decision_context": output.get("decision_context")}]
-                        await memory_store.save(scope, requested_session, recovered)
                 async with memory_store.turn(scope, requested_session) as (session_id, history):
                     await emit({"type": "session", "session_id": session_id})
                     trace = []
@@ -238,7 +225,8 @@ def create_app(*, transport: httpx.AsyncBaseTransport | None = None,
                             message = restored["request"]["message"]
                         elif (restored["output"] or {}).get("intent") == "recommend":
                             message = "推荐，补充条件：" + message
-                    await store.claim(scope, task_id, {"message": message, "constraints": input_constraints, "history": history[-8:]}, admitted=bool(admitted_task_id))
+                    history = await store.claim(scope, task_id, {"message": message, "constraints": input_constraints, "history": history[-8:]},
+                        lease_seconds=current.turn_timeout+30, admitted=bool(admitted_task_id), job_owner=job_owner)
                     claimed = True
                     await emit({"type": "task", "task_id": task_id, "state": "running"})
 
@@ -251,27 +239,34 @@ def create_app(*, transport: httpx.AsyncBaseTransport | None = None,
                                                    TaskResult(node_id="order_watch", agent="order", status="completed", data=event["result"]))
                         await emit(event)
 
-                    await request.app.state.harness.check("request", ctx=ctx, message=message, emit=record)
+                    async with store.keep_lease(task_id):
+                        await request.app.state.harness.check("request", ctx=ctx, message=message, emit=record)
 
-                    if current.orchestration_mode == "legacy":
-                        async with open_model(current, model_transport) as model:
-                            engine = AgentEngine(model, current.model, current.max_rounds, reasoning_effort=current.reasoning_effort)
-                            answer = await engine.run(body.message.strip(), history, ctx, record)
-                        outcome = {}
-                    else:
-                        outcome = await Supervisor(current, model_transport, store=store, task_id=task_id).run(
-                            message, history, ctx, record,
-                            input_constraints)
-                        answer = outcome.pop("answer")
+                        if current.orchestration_mode == "legacy":
+                            async with open_model(current, model_transport) as model:
+                                engine = AgentEngine(model, current.model, current.max_rounds, reasoning_effort=current.reasoning_effort)
+                                answer = await engine.run(body.message.strip(), history, ctx, record)
+                            outcome = {}
+                        else:
+                            outcome = await Supervisor(current, model_transport, store=store, task_id=task_id).run(
+                                message, history, ctx, record,
+                                input_constraints)
+                            answer = outcome.pop("answer")
                     # Only complete turns are committed. Token/Authorization never enter memory.
-                    history.append({"user": body.message.strip(), "assistant": answer, "trace": trace, "task_id": task_id,
+                    user_message = body.message.strip()
+                    if restored:
+                        previous_turn = next((t for t in history if t.get('task_id') == task_id), {})
+                        question = previous_turn.get('user') or restored['request']['message']
+                        user_message = question if user_message in {'继续', '恢复', '重试'} else question + '\n补充：' + user_message
+                    turn = {"user": user_message, "assistant": answer, "trace": trace, "task_id": task_id,
                                     **({"action_id": outcome["action"]["action_id"]} if outcome.get("action") else {}),
-                                    **{key: outcome[key] for key in ("constraints", "state", "decision_context", "answer_origin") if key in outcome}})
-                    await memory_store.save(scope, session_id, history)
+                                    **{key: outcome[key] for key in ("constraints", "state", "decision_context", "answer_origin") if key in outcome}}
                     result = {"session_id": session_id, "task_id": task_id, "trace_id": task_id,
                               "answer": answer, "trace": trace, **outcome,
                               "metrics": summarize(trace, (time.perf_counter() - started) * 1000)}
-                    await store.finish(task_id, outcome.get("state", "completed"), result)
+                    await store.finish(task_id, outcome.get("state", "completed"), result, turn=turn)
+                    claimed = False
+                    await memory_store.after_commit()
                     await emit({"type": "done", **result})
                     return result
         except TimeoutError as exc:
@@ -285,6 +280,8 @@ def create_app(*, transport: httpx.AsyncBaseTransport | None = None,
                 await asyncio.shield(store.finish(task_id, "interrupted", {"error": {"code": "DISCONNECTED", "message": "连接中断，可恢复任务"}}))
             raise
         except Exception as exc:
+            if isinstance(exc, AgentError) and exc.code == "TASK_LEASE_LOST":
+                raise
             if claimed:
                 await store.event(task_id, {"type": "error", "code": getattr(exc, "code", "INTERNAL_ERROR")})
                 await store.finish(task_id, "failed", {"error": {"code": getattr(exc, "code", "INTERNAL_ERROR"), "message": str(exc) if isinstance(exc, AgentError) else "任务失败"}})

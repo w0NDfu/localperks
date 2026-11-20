@@ -3,7 +3,8 @@ if redis.call('EXISTS', 'localperks:docker:initialized:v1') == 1 then
     return 1
 end
 
-redis.call('SET', 'seckill:stock:1', '100', 'NX')
+-- Activity stock is prepared from committed MySQL data by SeckillActivityCache.
+-- Never seed a hard-coded inventory against an existing database.
 redis.call('GEOADD', 'shop:geo:1', 'NX', 120.149192, 30.316078, '1')
 redis.call('SET', 'localperks:docker:initialized:v1', '1')
 return 1

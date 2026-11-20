@@ -31,6 +31,8 @@ def test_real_lua_atomic_stock_and_one_user_one_reservation():
                 initial = concurrency // 2
                 try:
                     await redis.set(stock_key, initial)
+                    await redis.hset(f'seckill:activity:{voucher}', mapping={'ready':'1','beginAt':'1','endAt':'9999999999999'})
+                    await redis.hset(f'seckill:purchased:{voucher}', '__ready__', '1')
                     started = time.perf_counter()
                     replies = await asyncio.gather(*(redis.eval(script, 0, voucher, str(i)) for i in range(concurrency)))
                     elapsed = time.perf_counter() - started
@@ -42,17 +44,19 @@ def test_real_lua_atomic_stock_and_one_user_one_reservation():
                                  'initial_stock': initial, 'remaining_stock': remaining, 'unique_users': cardinality,
                                  'duration_seconds': elapsed, 'rps': concurrency / elapsed, 'mysql_orders': 'NOT_VERIFIED', 'mq_delivery': 'NOT_VERIFIED'})
                 finally:
-                    await redis.delete(stock_key, users_key)
+                    await redis.delete(stock_key, users_key, f'seckill:activity:{voucher}', f'seckill:purchased:{voucher}')
             voucher = run.name + ':lua:dedupe'
             stock_key, users_key = f'seckill:stock:{voucher}', f'seckill:order:{voucher}'
             try:
                 await redis.set(stock_key, 2)
+                await redis.hset(f'seckill:activity:{voucher}', mapping={'ready':'1','beginAt':'1','endAt':'9999999999999'})
+                await redis.hset(f'seckill:purchased:{voucher}', '__ready__', '1')
                 assert await redis.eval(script, 0, voucher, 'same-user') == 0
                 assert await redis.eval(script, 0, voucher, 'same-user') == 2
                 assert int(await redis.get(stock_key)) == 1
                 assert await redis.scard(users_key) == 1
             finally:
-                await redis.delete(stock_key, users_key)
+                await redis.delete(stock_key, users_key, f'seckill:activity:{voucher}', f'seckill:purchased:{voucher}')
         with (run / 'seckill_component.csv').open('w', encoding='utf-8-sig', newline='') as stream:
             writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
             writer.writeheader()

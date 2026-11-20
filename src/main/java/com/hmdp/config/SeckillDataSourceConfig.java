@@ -7,7 +7,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 
-/** Partition the original ten-connection budget so row-lock waits cannot starve admission. */
+/** SQL is reserved for asynchronous orders and background work; admission uses Redis only. */
 @Configuration
 public class SeckillDataSourceConfig {
     @Bean
@@ -16,16 +16,8 @@ public class SeckillDataSourceConfig {
     public HikariDataSource dataSource(DataSourceProperties properties) {
         HikariDataSource source = properties.initializeDataSourceBuilder().type(HikariDataSource.class).build();
         source.setPoolName("orders");
-        source.setMaximumPoolSize(6);
+        source.setMaximumPoolSize(10);
         return source;
     }
 
-    @Bean(name = "seckillAdmissionDataSource")
-    public HikariDataSource seckillAdmissionDataSource(DataSourceProperties properties) {
-        HikariDataSource source = properties.initializeDataSourceBuilder().type(HikariDataSource.class).build();
-        source.setPoolName("admission");
-        source.setMaximumPoolSize(4);
-        source.setMinimumIdle(4);
-        return source;
-    }
 }

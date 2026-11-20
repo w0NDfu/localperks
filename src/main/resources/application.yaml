@@ -48,13 +48,8 @@ hmdp:
     # Includes accepted reservations waiting for SQL order commit across instances.
     max-pending: 2000
     max-inflight-sends: 64
-    eligibility-batch:
-      enabled: ${HMDP_ELIGIBILITY_BATCH_ENABLED:true}
-      workers: 2
-      size: 32
-      flush-millis: 1
-      capacity: 1024
-      wait-millis: 2000
+    # Scan/preheat outside the HTTP admission path. Never refill live Redis stock from SQL.
+    preheat-fixed-delay: 60000
     broker-batch:
       enabled: ${HMDP_BROKER_BATCH_ENABLED:true}
       workers: 2

@@ -184,6 +184,9 @@ class HttpPerfRun(PerfRun):
                 ('        SeckillAdmissionRepository.Eligibility eligibility = admission.inspect(userId, voucherId);',
                  '        long precheckStarted = System.nanoTime();\n        SeckillAdmissionRepository.Eligibility eligibility = admission.inspect(userId, voucherId);\n        com.hmdp.perf.PerfProbe.duration("http_precheck_sql", precheckStarted);')
             ]
+        elif 'admissionState.purchased(voucherId, userId)' in service.read_text(encoding='utf-8'):
+            # Redis-only admission has no foreground SQL stage to instrument.
+            prechecks = []
         patch_source(service, prechecks + [
             ('            seckillOrderMessageService.createAndSend(new VoucherOrderMessage(orderId, userId, voucherId));',
              '            long submitStarted = System.nanoTime();\n            seckillOrderMessageService.createAndSend(new VoucherOrderMessage(orderId, userId, voucherId));\n            com.hmdp.perf.PerfProbe.duration("http_durable_submit", submitStarted);'),
@@ -218,6 +221,8 @@ class HttpPerfRun(PerfRun):
 
 
 async def run_tier(args):
+    if args.disable_eligibility_batch and not (ROOT / 'src/main/java/com/hmdp/mq/SeckillEligibilityReader.java').exists():
+        raise ValueError('Foreground SQL eligibility has been removed; no eligibility batching switch remains')
     arrival = args.rps is not None
     oversell = args.oversell
     users = max(100, int(args.rps * args.seconds * 1.4)) if arrival else 500 if oversell else args.threads

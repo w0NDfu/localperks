@@ -21,7 +21,8 @@ public class SeckillScriptInitializer {
 
     @EventListener(ApplicationReadyEvent.class)
     public void initialize() throws IOException {
-        for (String name : new String[]{"seckill.lua", "rate_limit_sliding_window.lua", "seckill_rollback.lua"}) {
+        for (String name : new String[]{"seckill.lua", "rate_limit_sliding_window.lua", "seckill_rollback.lua",
+                "seckill_release_cancelled.lua", "seckill_preheat_claim.lua", "seckill_preheat_publish.lua"}) {
             byte[] script;
             try (InputStream stream = new ClassPathResource(name).getInputStream()) {
                 script = StreamUtils.copyToByteArray(stream);

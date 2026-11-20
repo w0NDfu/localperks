@@ -12,13 +12,11 @@ import com.hmdp.dto.VoucherOrderMessage;
 import com.hmdp.dto.VoucherOrderStatusResult;
 import com.hmdp.dto.VoucherWalletEntry;
 import com.hmdp.entity.MqMessage;
-import com.hmdp.entity.SeckillVoucher;
 import com.hmdp.entity.VoucherOrder;
 import com.hmdp.mapper.MqMessageMapper;
 import com.hmdp.mapper.VoucherOrderMapper;
 import com.hmdp.mq.OrderTimeoutMessageService;
 import com.hmdp.mq.SeckillOrderMessageService;
-import com.hmdp.mq.SeckillAdmissionRepository;
 import com.hmdp.mq.SeckillAdmissionState;
 import com.hmdp.ratelimit.RateLimitExceededException;
 import com.hmdp.service.ISeckillVoucherService;
@@ -28,7 +26,6 @@ import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
@@ -100,9 +97,6 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     private MqMessageMapper mqMessageMapper;
 
     @Resource
-    private SeckillAdmissionRepository admission;
-
-    @Resource
     private SeckillAdmissionState admissionState;
 
     @Value("${hmdp.seckill.max-pending:2000}")
@@ -111,15 +105,6 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     @Override
     public Result seckillVoucher(Long voucherId) {
         Long userId = UserHolder.getUser().getId();
-        SeckillAdmissionRepository.Eligibility eligibility = admission.inspect(userId, voucherId);
-        if (eligibility.existing != null) {
-            return existingSubmission(eligibility.existing);
-        }
-        LocalDateTime now = LocalDateTime.now();
-        if (eligibility.begin == null || eligibility.end == null
-                || now.isBefore(eligibility.begin) || !now.isBefore(eligibility.end)) {
-            return Result.fail("当前不在秒杀活动时段");
-        }
         long orderId = redisIdWorker.nextId("order");
         Long result = stringRedisTemplate.execute(
                 SECKILL_SCRIPT,
@@ -135,22 +120,25 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             return Result.fail("库存不足");
         }
         if (code == 2) {
+            Long purchased = admissionState.purchased(voucherId, userId);
+            if (purchased != null) {
+                return Result.ok(new SeckillOrderSubmitResult(purchased, VIEW_STATUS_PROCESSING,
+                        "已存在订单，请查看订单状态"));
+            }
             Long prior = admissionState.previous(voucherId, userId);
             if (prior != null) {
                 return submissionFromReceipt(prior, userId);
             }
-            MqMessage pending = mqMessageMapper.selectOne(new QueryWrapper<MqMessage>()
-                    .eq("user_id", userId).eq("voucher_id", voucherId)
-                    .eq("topic", SECKILL_ORDER_TOPIC).ne("status", MQ_MESSAGE_STATUS_FAILED)
-                    .orderByDesc("id").last("limit 1"));
-            if (pending == null) {
-                return Result.fail("抢券请求正在提交，请稍后查看我的券");
-            }
-            VoucherOrderStatusResult state = messageStatus(pending.getOrderId(), pending.getStatus(), pending.getCreateTime());
-            return Result.ok(new SeckillOrderSubmitResult(state.getOrderId(), state.getStatusCode(), state.getStatusText()));
+            return Result.fail("抢券请求正在提交，请稍后查看我的券");
         }
         if (code == 3) {
             throw new RateLimitExceededException(1000);
+        }
+        if (code == 4) {
+            return Result.fail("当前不在秒杀活动时段");
+        }
+        if (code == 5) {
+            return Result.fail("秒杀活动暂未就绪，请稍后重试");
         }
         if (code != 0) {
             return Result.fail("抢券暂不可用，请稍后重试");
@@ -177,11 +165,6 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             return Result.ok(new SeckillOrderSubmitResult(orderId, VIEW_STATUS_FAILED, VIEW_TEXT_FAILED));
         }
         return Result.ok(new SeckillOrderSubmitResult(orderId, VIEW_STATUS_QUEUING, VIEW_TEXT_QUEUING));
-    }
-
-    private Result existingSubmission(VoucherOrder order) {
-        VoucherOrderStatusResult state = orderStatusResult(order);
-        return Result.ok(new SeckillOrderSubmitResult(state.getOrderId(), state.getStatusCode(), state.getStatusText()));
     }
 
     @Override
@@ -264,7 +247,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                 if (Integer.valueOf(ORDER_STATUS_UNPAID).equals(existing.getStatus())) {
                     orderTimeoutMessageService.enqueue(existing.getId(), userId, voucherId);
                 }
-                completeAdmissionAfterCommit(message, false);
+                completeAdmissionAfterCommit(message, false, existing.getId());
                 return;
             }
 
@@ -293,7 +276,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                         .eq("voucher_id", voucherId)
                         .update();
                 log.warn("重复订单消息已被数据库唯一索引拦截，userId={}, voucherId={}", userId, voucherId);
-                completeAdmissionAfterCommit(message, false);
+                VoucherOrder actual = query().eq("user_id", userId).eq("voucher_id", voucherId).one();
+                if (actual == null) throw e;
+                completeAdmissionAfterCommit(message, false, actual.getId());
                 return;
             }
 
@@ -305,6 +290,10 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     }
 
     private void completeAdmissionAfterCommit(VoucherOrderMessage message, boolean failed) {
+        completeAdmissionAfterCommit(message, failed, message.getOrderId());
+    }
+
+    private void completeAdmissionAfterCommit(VoucherOrderMessage message, boolean failed, Long actualOrderId) {
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
@@ -315,7 +304,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                                 "orderId", message.getOrderId().toString(), "voucherId", message.getVoucherId().toString(),
                                 "reason", "mysql_stock_unavailable");
                     }
-                    admissionState.finish(message, failed ? "FAILED" : "SUCCESS");
+                    admissionState.finish(message, failed ? "FAILED" : "SUCCESS", actualOrderId);
                 } catch (Exception error) {
                     log.warn("Order committed; reservation receipt awaits reconciliation, orderId={}", message.getOrderId(), error);
                 }
@@ -339,7 +328,16 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                 .setSql("stock = stock + 1")
                 .eq("voucher_id", message.getVoucherId())
                 .update();
-        rollbackSeckillReservation(message.getVoucherId(), message.getUserId(), message.getOrderId());
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                try {
+                    admissionState.releaseCancelled(message);
+                } catch (Exception error) {
+                    log.warn("Cancelled order awaits Redis release reconciliation, orderId={}", message.getOrderId(), error);
+                }
+            }
+        });
         System.out.println("订单超时");
     }
 

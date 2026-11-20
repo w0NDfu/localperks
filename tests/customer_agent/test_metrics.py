@@ -37,7 +37,11 @@ def test_100_submissions_keep_10_tasks_and_10_complete_turns():
                     await asyncio.sleep(.02)
                 store = app.state.task_store
                 task_count = await store.call(lambda c: c.execute("SELECT COUNT(*) AS n FROM agent_tasks").fetchone()["n"])
-                turns = sum(len(history) for history in app.state.memory.rows.values())
+                completed = await store.call(lambda c: c.execute("SELECT state,output FROM agent_tasks").fetchall())
+                assert all(row['state'] == 'completed' for row in completed), completed
+                # Durable turns are authoritative; an asynchronous cache observer
+                # need not have materialized every committed task yet.
+                turns = await store.call(lambda c: c.execute("SELECT COUNT(*) AS n FROM agent_turns").fetchone()['n'])
                 assert task_count == 10 and turns == 10
                 assert len({r[1]["task_id"] for r in results}) == 10
                 durations = sorted(row[0] for row in results)

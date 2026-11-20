@@ -647,7 +647,7 @@
 
 `WS /agent/tasks/{task_id}/ws` 只用于通知，连接成功后 5 秒内发送 `{"authorization":"Java登录令牌","after":0}`。令牌不放在 URL。事件附全局递增的 `seq`，终态发 `type=snapshot/state/output`；断线用下表中的 GET 状态和事件补偿。前端按当前身份重新读取 action 获取确认凭证，凭证不写任务事件。
 
-登录异步任务使用 PostgreSQL 共享队列，按持久受理顺序保证同会话跨实例 FIFO。默认每实例16个执行者、全局256路、队列10000条、每用户32条，均可配置。短期令牌经认证加密存于 Redis，默认900秒；执行前重新鉴权，其他实例可接管未完成任务。凭据过期返回等待认证状态，原用户重新登录后以原请求编号重交；完成任务重复提交仅返回原结果。同步/SSE兼容入口仍使用会话锁，不属于共享 FIFO 队列。WebSocket 使用每实例一个 PostgreSQL LISTEN 连接通知，15秒补查兜底。[配置与测试口径](AGENT_SHARED_CONCURRENCY.md)
+登录异步任务使用 PostgreSQL 共享队列，按持久受理顺序保证同会话跨实例 FIFO。默认每实例16个执行者、全局256路、队列10000条、每用户32条，均可配置。短期令牌经认证加密存于 Redis，默认900秒；执行前重新鉴权，其他实例可接管未完成任务。凭据过期返回等待认证状态，原用户重新登录后以原请求编号重交；完成任务重复提交仅返回原结果。同步/SSE兼容入口使用 PostgreSQL 会话执行权，不属于共享 FIFO 队列。WebSocket 使用每实例一个 PostgreSQL LISTEN 连接通知，15秒补查兜底。[配置与测试口径](AGENT_SHARED_CONCURRENCY.md)
 
 个人偏好接口：`GET /agent/preferences` 返回 `preferences/revision/updated/source`；`PUT /agent/preferences` 接收 `{"revision":0,"preferences":{"budget_per_person":80,"cuisine_preferences":["日料"],"excluded_categories":["火锅"],"answer_style":"concise"}}`；`DELETE /agent/preferences?revision=1` 清除偏好并推进版本。所有接口由 Java 登录身份确定所属用户，不接受用户ID；版本冲突返回409，游客返回401。支持预算、半径、偏好分类、排除分类和简洁/适中/详细风格；当前明确要求优先，不自动从浏览或聊天写入长期画像。
 
@@ -658,7 +658,7 @@
 | POST | `/agent/tasks/{task_id}/resume` | 与聊天相同请求格式，补充/修改条件；`message` 必填，`继续`复用原目标 |
 | POST | `/agent/chat/stream` | 可附 `task_id` 恢复原任务并继续接收 SSE |
 
-任务恢复校验原身份与会话；业务实时数据重查。Redis 缓存过期时可由 PostgreSQL 持久化任务恢复对话。未过期执行租约返回409；不存在/他人任务返回404。任务、检查点、事件、交易幂等和模型用量统一写入 `AGENT_STATE_DSN` 指向的 PostgreSQL；旧 SQLite 卷保留为迁移源，不再承载在线任务。[状态与调度配置](AGENT_SHARED_CONCURRENCY.md)
+任务恢复校验原身份与会话；业务实时数据重查。会话历史与任务结果在 PostgreSQL 同事务提交；Redis 缓存过期或更新失败时回源持久历史。未过期执行租约返回409；不存在/他人任务返回404。执行者以 owner 与递增 execution_epoch 校验并续租，过期写入被拒绝；已完成任务的继续/恢复/重试返回原结果。任务、检查点、事件、交易幂等和模型用量统一写入 `AGENT_STATE_DSN` 指向的 PostgreSQL；旧 SQLite 卷保留为迁移源，不再承载在线任务。[状态与调度配置](AGENT_SHARED_CONCURRENCY.md)
 
 SSE 新增 `task/route/plan/node_start/node_result/checkpoint_restored/decision/explanation/rag/degradation/order_status`。`done` 表示本轮回答结束，业务 `state` 仍可能为 `waiting_input/waiting_confirmation/failed`，不能把 HTTP200 或 SSE建立成功当成业务成交。
 
@@ -717,7 +717,7 @@ P4.1 调查响应增加 `route`、`symptom`、`verified_categories`、`findings`
 
 ## 秒杀直接确认与关单持久化
 
-前置活动/历史订单核验默认使用`hmdp.seckill.eligibility-batch`：2个读取线程、每批最多32个用户/券、凑批最多1 ms、队列1,024、调用方等待2秒。每次读取新鲜SQL结果，按输入序号映射回本人请求，不缓存资格或省略校验；数据库连接总预算不变。核验队列满、超时或关闭返回429和Retry-After，发生在订单编号生成及Redis预留之前。`HMDP_ELIGIBILITY_BATCH_ENABLED=false`保留逐请求查询对照。[测试说明](TESTING.md)
+2026-11-20 起，抢券入口不查询 MySQL：活动发布事务提交后预热，启动时及后台每 60 秒补齐未准备的活动状态。Redis Lua 校验活动起止时间、库存、临时预留、永久购买资格和在途上限；重复请求从 Redis 返回原订单编号。缓存未准备完整时返回 `success=false`、`秒杀活动暂未就绪，请稍后重试`，不逐请求回源。原核验合批队列、`eligibility-batch` 开关和核验专用连接池已移除，SQL 连接总上限仍为 10。[当前设计及验证](SECKILL_REDIS_ADMISSION.md)
 
 2026-11-12移除新请求的受理Outbox，2026-11-13进一步改为Broker微批确认：Redis Lua原子预留库存、资格、原订单编号和UNKNOWN回执，随后进入有界发送队列，只有对应批次收到SEND_OK后才返回ACCEPTED。默认2个发送线程、每批最多32条、凑批最多1 ms、队列1,024条，调用方最多等待3秒，MQ发送本身超时3秒，SDK同步发送自动重试次数为0。队列满或等待超时返回UNKNOWN，不能将进入内存队列当成可靠受理；超时不取消可能已发送的消息。跨实例按订单编号领取10秒发送租约，Redis恢复扫描沿用原编号，处理预留后退出及Broker确认丢失。确认后Redis回执更新失败不撤销Broker确认，消费端仍按唯一键和订单状态幂等处理。Broker默认SYNC_FLUSH，副本策略以部署配置为准。
 

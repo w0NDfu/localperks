@@ -1,9 +1,7 @@
 package com.hmdp.mq;
 
 import com.hmdp.entity.MqMessage;
-import com.hmdp.entity.SeckillVoucher;
 import com.hmdp.entity.VoucherOrder;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.jdbc.core.BeanPropertyRowMapper;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -11,47 +9,23 @@ import org.springframework.stereotype.Repository;
 import javax.sql.DataSource;
 import java.time.LocalDateTime;
 import java.util.List;
-import java.sql.ResultSet;
-import java.sql.SQLException;
 
 import static com.hmdp.utils.RocketMQConstants.SECKILL_ORDER_TOPIC;
 
-/** HTTP eligibility/commit have reserved capacity; publishers and callbacks share the business pool. */
+/** SQL access for background delivery recovery only; never called by normal admission. */
 @Repository
 public class SeckillAdmissionRepository {
-    private final SeckillEligibilityReader eligibility;
     private final JdbcTemplate background;
     private static final BeanPropertyRowMapper<VoucherOrder> ORDER_MAPPER = new BeanPropertyRowMapper<>(VoucherOrder.class);
     private static final BeanPropertyRowMapper<MqMessage> MESSAGE_MAPPER = new BeanPropertyRowMapper<>(MqMessage.class);
 
-    public SeckillAdmissionRepository(@Qualifier("dataSource") DataSource businessSource, SeckillEligibilityReader eligibility) {
-        this.eligibility = eligibility;
+    public SeckillAdmissionRepository(DataSource businessSource) {
         this.background = new JdbcTemplate(businessSource);
     }
 
     public VoucherOrder findOrder(Long userId, Long voucherId) {
         return first(background.query("SELECT * FROM tb_voucher_order WHERE user_id=? AND voucher_id=?",
                 ORDER_MAPPER, userId, voucherId));
-    }
-
-    public Eligibility inspect(Long userId, Long voucherId) {
-        return eligibility.inspect(userId, voucherId);
-    }
-
-    public static class Eligibility {
-        public final VoucherOrder existing;
-        public final LocalDateTime begin;
-        public final LocalDateTime end;
-
-        public Eligibility(VoucherOrder existing, LocalDateTime begin, LocalDateTime end) {
-            this.existing = existing;
-            this.begin = begin;
-            this.end = end;
-        }
-    }
-
-    private static LocalDateTime time(ResultSet row, String column) throws SQLException {
-        return row.getObject(column, LocalDateTime.class);
     }
 
     public MqMessage findMessage(Long orderId, Long userId) {

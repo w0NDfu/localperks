@@ -1,0 +1,107 @@
+{
+  "date": "2026-11-20",
+  "source_run": "v03-20261120-100646-d82326e8",
+  "pass": true,
+  "scope": "Isolated real MySQL/Redis/RocketMQ correctness regression; not a capacity benchmark",
+  "java_regressions": {
+    "suites": [
+      {
+        "name": "com.hmdp.cache.SeckillActivityCacheIntegrationTest",
+        "tests": "11",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0"
+      },
+      {
+        "name": "com.hmdp.mq.OrderTimeoutClaimRepositoryTest",
+        "tests": "2",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0"
+      },
+      {
+        "name": "com.hmdp.mq.OrderTimeoutMessageServiceTest",
+        "tests": "6",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0"
+      },
+      {
+        "name": "com.hmdp.mq.SeckillBrokerBatchSenderTest",
+        "tests": "5",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0"
+      },
+      {
+        "name": "com.hmdp.mq.SeckillOrderMessageServiceTest",
+        "tests": "9",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0"
+      },
+      {
+        "name": "com.hmdp.service.impl.VoucherOrderAdmissionTest",
+        "tests": "10",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0"
+      },
+      {
+        "name": "com.hmdp.service.impl.VoucherOrderOwnershipTest",
+        "tests": "6",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0"
+      },
+      {
+        "name": "com.hmdp.service.impl.VoucherSeckillPublicationTest",
+        "tests": "4",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0"
+      }
+    ],
+    "tests": 53
+  },
+  "mysql_paused_cases": {
+    "accepted": {
+      "http": 200,
+      "business_success": true
+    },
+    "duplicate": {
+      "http": 200,
+      "business_success": true
+    },
+    "future": {
+      "http": 200,
+      "business_success": false
+    },
+    "sold_out": {
+      "http": 200,
+      "business_success": false
+    },
+    "historical": {
+      "http": 200,
+      "business_success": true
+    },
+    "missing": {
+      "http": 200,
+      "business_success": false
+    }
+  },
+  "async_order_after_mysql_resume": true,
+  "cancelled_purchase_is_still_unique": true,
+  "lost_cancel_release_reconciled": true,
+  "concurrent_three_coupons": {
+    "requests": 10,
+    "accepted": 3,
+    "sold_out": 7,
+    "orders": 3,
+    "redis_stock": 0,
+    "mysql_stock": 0
+  },
+  "published_activity_ready_after_commit": true,
+  "missing_live_stock_not_refilled": true,
+  "model_calls": 0
+}

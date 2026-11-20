@@ -84,7 +84,7 @@ class ActionService:
         return {"operation": request.operation, "order_id": request.order_id,
                 "notice": "取消未支付订单" if request.operation == "cancel" else "仅开发模拟支付，不会实际扣款"}
 
-    async def prepare(self, request, ctx):
+    async def prepare(self, request, ctx, *, task_id=None):
         self.require_user(ctx)
         payload = request.model_dump(mode="json", exclude={"idempotency_key"})
         existing = await self.store.call(lambda c: c.execute(
@@ -99,6 +99,8 @@ class ActionService:
             raise AgentError(exc.code, str(exc), exc.status_code) from exc
         action_id, nonce, now = str(uuid.uuid4()), secrets.token_urlsafe(32), time.time()
         def insert(c):
+            if task_id:
+                self.store._guard(c, task_id, require_owner=True)
             c.execute("INSERT INTO agent_actions VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(scope,idem) DO NOTHING",
                       (action_id, ctx.scope, str(request.idempotency_key), request.operation,
                        dump(payload), dump(preview), nonce, "prepared", None, now, now))

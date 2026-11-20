@@ -1,6 +1,7 @@
 package com.hmdp.service.impl;
 
 import com.hmdp.cache.VoucherCacheInvalidationEvent;
+import com.hmdp.cache.SeckillActivityCache;
 import com.hmdp.entity.Voucher;
 import com.hmdp.mapper.VoucherMapper;
 import com.hmdp.service.ISeckillVoucherService;
@@ -11,9 +12,9 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import java.time.LocalDateTime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -34,10 +35,7 @@ class VoucherServiceImplTest {
     private ISeckillVoucherService seckillVoucherService;
 
     @Mock
-    private StringRedisTemplate stringRedisTemplate;
-
-    @Mock
-    private ValueOperations<String, String> valueOperations;
+    private SeckillActivityCache activityCache;
 
     private VoucherServiceImpl voucherService;
 
@@ -47,7 +45,7 @@ class VoucherServiceImplTest {
         ReflectionTestUtils.setField(voucherService, "baseMapper", voucherMapper);
         ReflectionTestUtils.setField(voucherService, "applicationEventPublisher", eventPublisher);
         ReflectionTestUtils.setField(voucherService, "seckillVoucherService", seckillVoucherService);
-        ReflectionTestUtils.setField(voucherService, "stringRedisTemplate", stringRedisTemplate);
+        ReflectionTestUtils.setField(voucherService, "seckillActivityCache", activityCache);
     }
 
     @Test
@@ -81,19 +79,22 @@ class VoucherServiceImplTest {
     }
 
     @Test
-    void shouldForceSeckillTypeAndInitializeRedisStock() {
+    void shouldForceSeckillTypeAndPreheatAfterCommit() {
         Voucher voucher = new Voucher();
         voucher.setId(3L);
         voucher.setShopId(30L);
         voucher.setType(0);
         voucher.setStock(10);
+        voucher.setBeginTime(LocalDateTime.now());
+        voucher.setEndTime(LocalDateTime.now().plusHours(1));
         when(voucherMapper.insert(voucher)).thenReturn(1);
         when(seckillVoucherService.save(any())).thenReturn(true);
-        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
-
-        voucherService.addSeckillVoucher(voucher);
-
-        assertEquals(1, voucher.getType());
-        verify(valueOperations).set("seckill:stock:3", "10");
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            voucherService.addSeckillVoucher(voucher);
+            assertEquals(1, voucher.getType());
+            TransactionSynchronizationManager.getSynchronizations().get(0).afterCommit();
+            verify(activityCache).warm(3L);
+        } finally { TransactionSynchronizationManager.clearSynchronization(); }
     }
 }

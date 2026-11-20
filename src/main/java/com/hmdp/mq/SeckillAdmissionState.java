@@ -1,6 +1,7 @@
 package com.hmdp.mq;
 
 import com.hmdp.dto.VoucherOrderMessage;
+import com.hmdp.dto.OrderTimeoutMessage;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Component;
@@ -25,7 +26,8 @@ public class SeckillAdmissionState {
             "if redis.call('hget',KEYS[1],'state')=='UNKNOWN' then redis.call('hset',KEYS[1],'state','ACCEPTED') end "
                     + "redis.call('zrem',KEYS[2],ARGV[1]) return 1", Long.class);
     private static final DefaultRedisScript<Long> FINISH = new DefaultRedisScript<>(
-            "if redis.call('exists',KEYS[1])==1 then redis.call('hset',KEYS[1],'state',ARGV[2]) redis.call('expire',KEYS[1],86400) end "
+            "if ARGV[2]=='SUCCESS' then redis.call('hsetnx',KEYS[5],ARGV[3],ARGV[4]) end "
+                    + "if redis.call('exists',KEYS[1])==1 then redis.call('hset',KEYS[1],'state',ARGV[2]) redis.call('expire',KEYS[1],86400) end "
                     + "redis.call('zrem',KEYS[2],ARGV[1]) redis.call('zrem',KEYS[3],ARGV[1]) "
                     + "redis.call('zrem',KEYS[4],ARGV[1]) return 1", Long.class);
     private static final DefaultRedisScript<Long> DEFER = new DefaultRedisScript<>(
@@ -38,6 +40,8 @@ public class SeckillAdmissionState {
     private static final DefaultRedisScript<Long> RELEASE_SEND = new DefaultRedisScript<>(
             "if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('del',KEYS[1]) end return 0", Long.class);
     private final StringRedisTemplate redis;
+    private static final DefaultRedisScript<Long> RELEASE_CANCELLED =
+            com.hmdp.utils.RedisScripts.load("seckill_release_cancelled.lua", Long.class);
 
     public SeckillAdmissionState(StringRedisTemplate redis) {
         this.redis = redis;
@@ -50,6 +54,16 @@ public class SeckillAdmissionState {
     public Long previous(Long voucherId, Long userId) {
         Object value = redis.opsForHash().get("seckill:request-user:" + voucherId, userId.toString());
         return value == null ? null : Long.valueOf(value.toString());
+    }
+
+    public Long purchased(Long voucherId, Long userId) {
+        Object value = redis.opsForHash().get("seckill:purchased:" + voucherId, userId.toString());
+        return value == null ? null : Long.valueOf(value.toString());
+    }
+
+    public void releaseCancelled(OrderTimeoutMessage message) {
+        redis.execute(RELEASE_CANCELLED, Collections.emptyList(), message.getVoucherId().toString(),
+                message.getUserId().toString(), message.getOrderId().toString());
     }
 
     public Map<Object, Object> receipt(Long orderId, Long userId) {
@@ -93,9 +107,14 @@ public class SeckillAdmissionState {
     }
 
     public void finish(VoucherOrderMessage message, String state) {
+        finish(message, state, message.getOrderId());
+    }
+
+    public void finish(VoucherOrderMessage message, String state, Long actualOrderId) {
         redis.execute(FINISH, Arrays.asList(key(message.getOrderId()), PENDING, UNCONFIRMED,
-                        "seckill:admission:voucher:" + message.getVoucherId()),
-                message.getOrderId().toString(), state);
+                        "seckill:admission:voucher:" + message.getVoucherId(),
+                        "seckill:purchased:" + message.getVoucherId()),
+                message.getOrderId().toString(), state, message.getUserId().toString(), actualOrderId.toString());
     }
 
     public Set<String> due(boolean unconfirmed) {

@@ -307,6 +307,27 @@ fileReservedTime=1
         self.sql(f"INSERT INTO tb_voucher(id,shop_id,title,rules,pay_value,actual_value,type,status) VALUES({identifier},{shop},'专项验收券{identifier}','{rules}',{pay},10000,1,1); INSERT INTO tb_seckill_voucher(voucher_id,stock,begin_time,end_time) VALUES({identifier},{stock if mysql_stock is None else mysql_stock},{begin},DATE_ADD(NOW(),INTERVAL 7 DAY));")
         async with Redis.from_url(self.redis_url,decode_responses=True) as redis:
             await redis.set('seckill:stock:'+str(identifier),stock)
+            # Explicit fixture preheat outside the measured HTTP window. Match production scripts,
+            # including DB time conversion and permanent history; never bypass admission readiness.
+            prefix = 'seckill:'
+            keys = [prefix+'activity:'+str(identifier), prefix+'stock:'+str(identifier),
+                    prefix+'purchased:'+str(identifier), prefix+'admission:voucher:'+str(identifier),
+                    prefix+'order:'+str(identifier), prefix+'request-user:'+str(identifier)]
+            token = self.id + '-fixture-' + str(identifier)
+            claim = (ROOT/'src/main/resources/seckill_preheat_claim.lua').read_text(encoding='utf-8')
+            publish = (ROOT/'src/main/resources/seckill_preheat_publish.lua').read_text(encoding='utf-8')
+            if await redis.eval(claim, 3, *keys[:3], token) == 1:
+                times = self.sql(f'SELECT UNIX_TIMESTAMP(begin_time)*1000,UNIX_TIMESTAMP(end_time)*1000 FROM tb_seckill_voucher WHERE voucher_id={int(identifier)}')[0]
+                history = self.sql(f'SELECT user_id,id FROM tb_voucher_order WHERE voucher_id={int(identifier)}')
+                if history:
+                    await redis.hset(keys[2], mapping={user: order for user, order in history})
+                assert await redis.eval(publish, 6, *keys, token, *times, stock, '0' if history else '1') == 1
+            for _ in range(100):
+                if await redis.hget(keys[0], 'ready') == '1':
+                    break
+                await asyncio.sleep(.1)
+            else:
+                raise RuntimeError('Fixture admission state was not prepared')
 
     async def clear_stage_window(self):
         # Only exact test-created limiter keys in the entire dedicated instance.

@@ -64,3 +64,5 @@ Caffeine L1（当前 JVM）
 默认 L1 TTL 为 60 秒、最大缓存商户数为 10000，Redis L2 TTL 为 10 分钟。新增或更新优惠券的数据库事务提交后，当前实例先清理 L1 和 Redis，再向 `voucher-cache-invalidation-topic` 发送 RocketMQ 广播消息；其他实例收到消息后清理各自的 L1，并幂等删除 Redis L2。
 
 RocketMQ 或 Redis 短暂异常时会记录日志并降级；L1 短 TTL 与 Redis TTL 继续作为最终过期兜底。秒杀下单链路仍以 Redis Lua 中的实时库存校验为准，不依赖该静态信息缓存完成扣减。
+
+2026-11-20 起，抢券入口的活动时间和历史购买资格也提前准备到 Redis，不再逐请求查询 MySQL。活动、库存、资格未准备完整时暂停受理，由后台恢复；不采用普通查询缓存的缺失回源策略。见[秒杀入口设计](SECKILL_REDIS_ADMISSION.md)。
